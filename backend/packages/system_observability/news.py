@@ -38,7 +38,7 @@ def task_admission(status: str, pipeline: dict[str, Any], source: str) -> str:
                   'ready_review', 'auto_published', 'published', 'write_failed', 'format_failed',
                   'format_publish_failed', 'publisher_failed', 'publish_failed'}:
         return 'accepted'
-    if status in {'deduping', 'searched', 'search_failed'} and source in {'x', 'binance_square', 'jin10'}:
+    if status in {'deduping', 'searched', 'search_failed'} and source in {'x', 'binance_square', 'telegram_channel', 'jin10'}:
         return 'accepted'
     if source in {'hyperliquid_news', 'event_tracking'} and status not in {'judge_failed', 'pending'}:
         return 'accepted'

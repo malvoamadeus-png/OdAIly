@@ -1,5 +1,18 @@
 ﻿import { createLocalClient, type LocalApiClient, type Session } from './localApiClient';
 
+export type TelegramChannelName = { channel_key: string; write_name: string };
+
+export async function listTelegramChannelNames(): Promise<TelegramChannelName[]> {
+  const { data, error } = await localApi().from('telegram_channel_names').select('*').order('channel_key');
+  if (error) throw error;
+  return (data || []) as TelegramChannelName[];
+}
+
+export async function updateTelegramChannelName(channelKey: string, writeName: string): Promise<void> {
+  const { error } = await localApi().from('telegram_channel_names').update({ write_name: writeName }).eq('channel_key', channelKey);
+  if (error) throw error;
+}
+
 export type Settings = {
   global_interval_seconds: number;
   max_concurrency: number;
@@ -1025,6 +1038,7 @@ const taskPipelineSelectFields = [
 export const processingTaskSources = [
   'x',
   'binance_square',
+  'telegram_channel',
   'non_mainstream_media',
   'mainstream_media',
   'ai_source',

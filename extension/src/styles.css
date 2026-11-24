@@ -596,6 +596,10 @@ body {
   min-width: 0;
 }
 
+.feedCard--telegram_aggregate .feedCard__title {
+  white-space: pre-line;
+}
+
 .feedCard__title--fresh,
 .feedCard__title--fresh a {
   color: #dc2626;

@@ -8,6 +8,9 @@ BUSINESS_REGISTRY: tuple[dict[str, object], ...] = (
         {"key": "ai_source", "label": "AI信源标签", "steps": ["读取账号当时的AI信源标签", "走AI判断规则", "使用X常规模板", "查重并整理稿件", "进入发布策略"]},
         {"key": "discard", "label": "正常停止", "steps": ["收集帖子", "判断为重复、排除或材料不足", "保存停止原因，不创建发布步骤"]},
     ]},
+    {"key": "telegram_channel", "label": "Telegram个人频道", "kind": "write_flow", "sources": ["telegram_channel"], "entry": "Telegram个人频道", "scenarios": [
+        {"key": "personal", "label": "个人频道消息", "steps": ["实时接收并保留原文链接", "判断新闻价值", "查重", "按个人频道归因写作并格式化", "进入发布策略"]},
+    ]},
     {"key": "binance_square", "label": "币安广场", "kind": "write_flow", "sources": ["binance_square"], "entry": "币安广场账号订阅", "enabled": False, "scenarios": [
         {"key": "disabled", "label": "未启用", "steps": ["总开关或服务未启用", "不产生采集任务；显示为未启用"]},
         {"key": "manual", "label": "启用后新帖", "steps": ["读取账号新帖并按帖子ID去重", "复用Crypto判断和查重", "复用快讯模板写作与格式整理", "发布者强制挂后台", "保留投稿结果"]},

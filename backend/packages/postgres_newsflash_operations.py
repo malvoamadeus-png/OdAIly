@@ -194,7 +194,7 @@ class PostgresNewsflashOperationsRepository:
             _try_link_metadata,
         )
         if outlet_category is None:
-            outlet_category={"manual":"manual","business_news":"business","hyperliquid_monitor":"market","gate_market":"market","stock_market":"market","meme":"meme_digest","hot_topic_auto":"hot_topic_auto","scheduled_brief":"scheduled_brief","x":"ai_regular","binance_square":"ai_regular","competitor":"ai_regular","external_media":"ai_regular"}.get(origin_key)
+            outlet_category={"manual":"manual","business_news":"business","hyperliquid_monitor":"market","gate_market":"market","stock_market":"market","meme":"meme_digest","hot_topic_auto":"hot_topic_auto","scheduled_brief":"scheduled_brief","x":"ai_regular","binance_square":"ai_regular","telegram_channel":"ai_regular","competitor":"ai_regular","external_media":"ai_regular"}.get(origin_key)
             if delivery_key and str(delivery_key).startswith("okx-stock-brief:"):outlet_category="market"
             elif delivery_key and str(delivery_key).startswith("yesterday-hot-discussion:"):outlet_category="ai_regular"
         if outlet_category not in OUTLET_CATEGORY_CODES:raise ValueError(f"invalid newsflash outlet category: {outlet_category}")

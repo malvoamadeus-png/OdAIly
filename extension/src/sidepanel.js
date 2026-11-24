@@ -49,7 +49,7 @@ const NEWS_GEN_ROUTE_LABELS = {
 };
 const DEFAULT_FEED_LANE_RATIOS = { high: 75, ai: 25 };
 const FEED_LANES = [
-  { key: "high", title: "高频区", subtitle: "新快讯 / 文本审查者 / 巨鲸", empty: "暂无高频消息" },
+  { key: "high", title: "高频区", subtitle: "新快讯 / 文本审查者 / 链上 / 聚合新闻", empty: "暂无高频消息" },
   { key: "ai", title: "AI区", subtitle: "AI信源", empty: "暂无 AI 信源消息" }
 ];
 
@@ -408,8 +408,9 @@ function renderFeedCard(item) {
   const isWriter3 = item.feed_kind === "writer3_context";
   const isAutoNewsflashEvent = item.feed_kind === "auto_newsflash_event";
   const isBusinessNotice = item.feed_kind === "business_news";
+  const isTelegramAggregate = item.feed_kind === "telegram_aggregate";
   const isFastLane = item.lane !== "low";
-  const titleShouldLink = Boolean(detailUrlForItem(item)) && !isFastLane;
+  const titleShouldLink = Boolean(detailUrlForItem(item)) && (!isFastLane || isTelegramAggregate);
   const isExpanded = state.expandedFeedKeys.has(itemKey);
   const isFresh = isFreshFeedItem(item);
   const safeTitle = String(item.title || item.summary || `${item.feed_kind} 消息`);
@@ -479,7 +480,7 @@ function renderFeedCard(item) {
               : escapeHtml(safeTitle)
           }
         </h3>
-        ${isBusinessNotice ? "" : `<p class="feedCard__summary${
+        ${isBusinessNotice || isTelegramAggregate ? "" : `<p class="feedCard__summary${
           isExpanded ? " feedCard__summary--expanded" : ""
         }">${linkifyText(safeSummary)}</p>`}
         ${

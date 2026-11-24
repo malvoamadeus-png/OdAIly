@@ -142,6 +142,7 @@ def parse_args() -> argparse.Namespace:
 
     x_worker = subparsers.add_parser("x-capture-worker", help="Run the X capture worker.")
     x_worker.add_argument("--once", action="store_true", help="Run one capture pass and exit.")
+    subparsers.add_parser("telegram-channels-worker", help="Listen to configured Telegram channels.")
 
     hottopic_worker = subparsers.add_parser("hottopic-worker", help="Run the independent HotTopic X collector.")
     hottopic_worker.add_argument("--once", action="store_true", help="Run one collection pass and exit.")
@@ -2314,6 +2315,10 @@ def main() -> int:
             return local_pipeline_exhaust_command(args)
         if args.command == "x-capture-worker":
             return x_capture_worker_command(args)
+        if args.command == "telegram-channels-worker":
+            from packages.telegram_channels import run_telegram_channels
+            asyncio.run(run_telegram_channels())
+            return 0
         if args.command == "hottopic-worker":
             return hottopic_worker_command(args)
         if args.command == "x-agent-investment-leads-worker":

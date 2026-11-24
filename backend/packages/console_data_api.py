@@ -20,6 +20,7 @@ ALLOWED_TABLES = {
     "publisher_rule_config", "publisher_settings", "source_exclusion_rule_groups", "tasks",
     "whale_watch_activities", "whale_watch_addresses", "whale_watch_chain_states",
     "x_capture_accounts", "x_capture_attempts", "x_capture_settings",
+    "telegram_channel_names",
 }
 FILTER_OPERATORS = {"eq": "=", "neq": "!=", "gte": ">=", "lte": "<=", "gt": ">", "lt": "<"}
 READ_ONLY_TABLES = {"console_admins", "binance_square_attempts"}
@@ -231,6 +232,15 @@ class ConsoleDataApi:
         pipeline["search_result"] = search_result
 
     def _mutate(self, table: str, operation: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        if table == "telegram_channel_names":
+            data = payload.get("data")
+            filters = payload.get("filters") or []
+            if operation != "update" or not isinstance(data, dict) or set(data) != {"write_name"}:
+                raise ValueError("only Telegram writing names are editable")
+            if not isinstance(data["write_name"], str) or not data["write_name"].strip() or len(data["write_name"]) > 100:
+                raise ValueError("invalid Telegram writing name")
+            if len(filters) != 1 or filters[0].get("column") != "channel_key" or filters[0].get("op") != "eq" or filters[0].get("value") not in {"vida", "durov"}:
+                raise ValueError("invalid Telegram channel")
         where, where_params = self._where(payload)
         data = payload.get("data")
         if table == "binance_square_settings" and operation == "delete":

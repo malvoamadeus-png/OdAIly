@@ -17,6 +17,7 @@ def _now() -> datetime:
 def _source_label(source: str) -> str:
     return {
         "x": "X",
+        "telegram_channel": "Telegram",
         "non_mainstream_media": "Crypto信源",
         "ai_source": "AI信源",
         "external_media_alert": "Crypto信源",
@@ -74,6 +75,32 @@ class LocalEditorPluginFeedWriter:
             ensure_runtime_dirs(paths)
             store = LocalEditorPluginStore(paths.runtime_dir / "editor_plugin_local.sqlite")
         self.store = store
+
+    def upsert_telegram_aggregate(
+        self, *, channel: str, message_id: int, content: str, source_url: str,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        from packages.telegram_channel_format import format_aggregated_message
+
+        text = format_aggregated_message(channel, content)
+        if not text:
+            return
+        self.store.upsert_feed_items([{
+            "feed_item_id": f"{channel.casefold()}:{message_id}",
+            "feed_kind": "telegram_aggregate",
+            "lane": "high",
+            "priority": 88,
+            "title": text,
+            "summary": "",
+            "badges": [{"label": "来源", "value": channel, "tone": "neutral"}],
+            "status_label": "聚合新闻",
+            "status_tone": "neutral",
+            "occurred_at": occurred_at or _now(),
+            "source_url": source_url,
+            "detail_url": source_url,
+            "action_schema": {"type": "open_url", "url": source_url},
+            "meta_json": {"source": "telegram", "channel": channel, "message_id": message_id},
+        }])
 
     def upsert_business_news_notice(
         self,

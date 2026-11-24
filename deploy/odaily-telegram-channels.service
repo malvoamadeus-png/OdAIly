@@ -1,0 +1,19 @@
+[Unit]
+Description=OdAIly Telegram channel listener
+After=network-online.target odaily-local-pipeline.service postgresql.service
+Requires=postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/OdAIly
+EnvironmentFile=-/opt/OdAIly/.env
+EnvironmentFile=/etc/odaily/postgresql.env
+Environment=ODAILY_STORAGE_BACKEND=postgres
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/OdAIly/.venv/bin/python backend/src/main.py telegram-channels-worker
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

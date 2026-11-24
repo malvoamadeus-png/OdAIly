@@ -13,6 +13,7 @@ from packages.common.storage import connect_sqlite
 ORIGIN_LABELS = {
     "x": "X",
     "binance_square": "币安广场",
+    "telegram_channel": "Telegram",
     "competitor": "竞品",
     "external_media": "外媒",
     "hot_topic_auto": "热点自动快讯",
@@ -158,7 +159,7 @@ def ensure_newsflash_metadata_tables(conn) -> None:
             WHEN origin_key='meme' THEN 'meme_digest'
             WHEN origin_key='hot_topic_auto' THEN 'hot_topic_auto'
             WHEN origin_key='scheduled_brief' THEN 'scheduled_brief'
-            WHEN origin_key IN ('x','binance_square','competitor','external_media') THEN 'ai_regular'
+            WHEN origin_key IN ('x','binance_square','telegram_channel','competitor','external_media') THEN 'ai_regular'
             ELSE NULL END
         WHERE outlet_category IS NULL"""
     )
@@ -275,6 +276,7 @@ def record_newsflash_delivery(
             "scheduled_brief": "scheduled_brief",
             "x": "ai_regular",
             "binance_square": "ai_regular",
+            "telegram_channel": "ai_regular",
             "competitor": "ai_regular",
             "external_media": "ai_regular",
         }.get(origin_key)

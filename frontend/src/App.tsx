@@ -143,6 +143,7 @@ import { GateMarketPanel } from './GateMarketPanel';
 import { StockMarketPanel } from './StockMarketPanel';
 import { MacroNewsflashPanel } from './MacroNewsflashPanel';
 import { BusinessNewsPanel } from './BusinessNewsPanel';
+import TelegramChannelsPanel from './TelegramChannelsPanel';
 import {
   workflowFilters,
   workflowGroups,
@@ -153,7 +154,7 @@ import {
   type WorkflowNode,
 } from './workflowCatalog';
 
-type SourceManagementView = 'x' | 'binance_square' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'blockbeats_key';
+type SourceManagementView = 'x' | 'telegram' | 'binance_square' | 'non_mainstream' | 'ai_source' | 'mixed_source' | 'blockbeats_key';
 
 type ConsoleView =
   | SourceManagementView
@@ -185,7 +186,7 @@ type ConsoleView =
 function resolveInitialView(value: string | null): ConsoleView {
   if (!value || value === 'tasks') return value === 'tasks' ? 'system_information' : 'x';
   const views: ConsoleView[] = [
-    'x', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief', 'macro_newsflash',
+    'x', 'telegram', 'binance_square', 'non_mainstream', 'ai_source', 'mixed_source', 'blockbeats_key', 'system_information', 'system_health', 'scheduled_brief', 'macro_newsflash',
     'tasks', 'dedupe', 'timing', 'gate_market', 'stock_market', 'meme', 'predict_market', 'publisher', 'workflow', 'whale',
     'hyperliquid_news', 'prompts', 'competitor', 'newsflash', 'business_news', 'jin10', 'x_agent', 'ai_review', 'system_review', 'ai_text_self_upgrade',
   ];
@@ -207,7 +208,7 @@ function NavButton({
 }
 
 function isSourceManagementView(view: ConsoleView): view is SourceManagementView {
-  return view === 'x' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
+  return view === 'x' || view === 'telegram' || view === 'binance_square' || view === 'non_mainstream' || view === 'ai_source' || view === 'mixed_source' || view === 'blockbeats_key';
 }
 
 const emptySettings: Settings = {
@@ -369,6 +370,9 @@ function taskMetadataValue(task: TaskItem, key: string): string {
 }
 
 function taskSourceLabel(task: TaskItem): { primary: string; secondary: string } {
+  if (task.source === 'telegram_channel') {
+    return { primary: taskMetadataValue(task, 'effective_author_name') || 'Telegram频道', secondary: 'Telegram' };
+  }
   if (task.source === 'binance_square') {
     return {
       primary: taskMetadataValue(task, 'effective_author_name') || taskMetadataValue(task, 'author_display_name') || '币安广场',
@@ -1053,6 +1057,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const sourceManagementLabel =
     sourceManagementView === 'x'
       ? 'X'
+      : sourceManagementView === 'telegram' ? 'Telegram'
       : sourceManagementView === 'binance_square'
         ? '币安广场'
       : sourceManagementView === 'non_mainstream'
@@ -1065,6 +1070,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const sourceManagementSummary =
     sourceManagementView === 'x'
       ? `${enabledCount} 个启用 X 账号 · 全局 ${settings.global_interval_seconds}s · 抓取频率 / 写作名 / AI标签`
+      : sourceManagementView === 'telegram' ? '个人频道 · 写作名'
       : sourceManagementView === 'binance_square'
         ? `${binanceSquareSettings.enabled ? '总开关已打开' : '总开关关闭'} · ${enabledBinanceSquareCount} 个启用账号 · 固定 180s`
       : sourceManagementView === 'non_mainstream'
@@ -2062,6 +2068,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                 label: '币安广场',
                 summary: `${binanceSquareSettings.enabled ? '总开关开' : '总开关关'} · ${enabledBinanceSquareCount} 个账号 · 180s`,
               },
+              { key: 'telegram' as const, label: 'Telegram', summary: '个人频道 · 写作名' },
               {
                 key: 'non_mainstream' as const,
                 label: 'Crypto信源',
@@ -2239,6 +2246,8 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
             </section>
 
           </>
+        ) : view === 'telegram' ? (
+          <TelegramChannelsPanel />
         ) : view === 'binance_square' ? (
           <>
             <section className="toolbarBand">

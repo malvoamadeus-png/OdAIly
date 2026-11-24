@@ -15,7 +15,7 @@ from packages.common.storage import ClosingSQLiteConnection, connect_sqlite_read
 
 TERMINAL_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified', 'event_tracking_cancelled', 'expired', 'legacy_skipped', 'judge_failed', 'search_failed', 'write_failed', 'format_failed', 'publisher_failed')
 ARCHIVED_PAYLOAD_STATUSES = ('discarded', 'duplicate', 'auto_published', 'published', 'notified')
-SOURCE_TEXT_TYPES = ('x', 'binance_square', 'blockbeats', 'panews', 'jinse', 'jin10',
+SOURCE_TEXT_TYPES = ('x', 'binance_square', 'telegram_channel', 'blockbeats', 'panews', 'jinse', 'jin10',
                      'non_mainstream_media', 'crypto_source', 'ai_source', 'mixed_source',
                      'mainstream_media', 'external_media_alert', 'ai_source_alert', 'event_tracking')
 

@@ -9,6 +9,23 @@ from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.editor_plugin_local_store import LocalEditorPluginStore
 
 
+def test_telegram_aggregate_is_idempotent_and_links_to_original(tmp_path: Path) -> None:
+    store = LocalEditorPluginStore(tmp_path / "feed.sqlite")
+    writer = LocalEditorPluginFeedWriter(store)
+    for _ in range(2):
+        writer.upsert_telegram_aggregate(
+            channel="apewirenewsCN", message_id=123,
+            content="快讯\n\n$NVDA\n\n@apewirenews",
+            source_url="https://t.me/apewirenewsCN/123",
+        )
+    rows = store.list_feed_items(limit=10, max_age_hours=2)
+    assert len(rows) == 1
+    assert rows[0]["feed_kind"] == "telegram_aggregate"
+    assert rows[0]["lane"] == "high"
+    assert rows[0]["title"] == "快讯\n$NVDA"
+    assert rows[0]["source_url"] == "https://t.me/apewirenewsCN/123"
+
+
 def test_gate_and_meme_feed_items_have_distinct_identity(tmp_path: Path) -> None:
     store = LocalEditorPluginStore(tmp_path / "feed.sqlite")
     writer = LocalEditorPluginFeedWriter(store)
