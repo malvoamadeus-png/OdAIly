@@ -130,6 +130,19 @@ def test_headline_generation_uses_business_knowledge_and_generates_single_concep
     prompt = str(client.calls[0]["prompt"])
     assert '"business_tags":["硬盘","数据存储","存储设备"]' in prompt
     assert '"knowledge_verified":true' in prompt
+    assert client.calls[0]["reasoning_effort"] == "low"
+
+
+def test_theme_classifier_from_environment_uses_relaxed_timeout(monkeypatch) -> None:
+    monkeypatch.setenv("ODAILY_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("X_PROCESS_WRITER_MODEL", "odaily-gpt-writer")
+    monkeypatch.setenv("X_PROCESS_WRITER_REQUEST_TIMEOUT_SECONDS", "90")
+
+    classifier = StockThemeClassifier.from_environment()
+
+    assert classifier.model == "odaily-gpt-writer"
+    assert classifier.client is not None
+    assert classifier.client.timeout_seconds == 30.0
 
 
 def test_headline_generation_lists_multiple_concepts_in_deterministic_rank_order() -> None:
@@ -606,6 +619,13 @@ def test_us_digest_titles_round_to_integer_and_body_includes_all_members() -> No
     assert title == "多只美股下跌，CYPH下跌20%、USAR下跌10%"
     assert content.count("现报") == len(members)
     assert all(name in content for name in ("CYPH", "USAR", "CRML", "AMD", "MU", "苹果"))
+    lines = content.splitlines()
+    assert lines[0] == "Odaily星球日报讯 据 MSX.COM 数据，多只美股 24 小时普跌。"
+    assert len(lines) == 1 + len(members)
+    assert all(line.endswith("；") for line in lines[1:-1])
+    assert lines[-1].endswith("。")
+    assert lines[1] == "CYPH 下跌 20.3%，现报 100 USDT；"
+    assert lines[-1] == "苹果 下跌 5.0%，现报 100 USDT。"
 
 
 class _FakePushClient:

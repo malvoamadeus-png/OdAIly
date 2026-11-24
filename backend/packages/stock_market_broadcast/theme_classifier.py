@@ -65,6 +65,8 @@ _FORBIDDEN_TITLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _MIN_CONFIDENCE = 0.8
+_THEME_REQUEST_TIMEOUT_SECONDS = 30.0
+_THEME_REASONING_EFFORT = "low"
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +175,7 @@ class StockThemeClassifier:
                     api_key=settings.openai_api_key,
                     base_url=str(settings.openai_base_url),
                     api_style=settings.openai_api_style,
-                    timeout_seconds=min(8.0, settings.writer_request_timeout_seconds),
+                    timeout_seconds=min(_THEME_REQUEST_TIMEOUT_SECONDS, settings.writer_request_timeout_seconds),
                     max_attempts=1,
                     backoff_seconds=0,
                 ),
@@ -227,9 +229,10 @@ class StockThemeClassifier:
                 model=self.model,
                 prompt=prompt,
                 text_format=THEME_CLASSIFICATION_SCHEMA,
+                reasoning_effort=_THEME_REASONING_EFFORT,
             )
         except Exception as exc:
-            print(f"[stock-market] headline generation fallback error={type(exc).__name__}")
+            print(f"[stock-market] headline generation fallback error={type(exc).__name__} detail={exc}")
             return self._fallback(fallback_title, "model_error")
 
         moves = {member.instrument.asset_name: abs(member.change_pct) for member in members}

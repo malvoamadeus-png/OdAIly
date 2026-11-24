@@ -81,8 +81,8 @@ def render_digest(
             move = ("涨幅" if direction == "up" else "跌幅") + "扩大"
             title = f"{market_name}{window_label}{move}"
             lead = f"多只{market_name}{window_label}{move}"
-    details = "；".join(_member_text(member, direction, common) for member in members)
-    return _format_alert(title, f"{prefix}{lead}，{details}。", preserve_title=market == "us")
+    details = "；\n".join(_member_text(member, direction, common) for member in members)
+    return _format_alert(title, f"{prefix}{lead}。\n{details}。", preserve_title=market == "us")
 
 
 def render_alert(
