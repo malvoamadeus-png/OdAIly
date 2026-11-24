@@ -252,7 +252,8 @@ class AccountProfitMonitor:
                 pending = self.store.metadata('account_pending_fills:' + address, {}) if baseline else {}
                 coverage = pending.get('coverage') or (baseline or {}).get('coverage', {})
                 history_checked = (baseline or {}).get('state', {}).get('account_history_checked_ms', observed)
-                since = max(started, observed - DAY,
+                window_floor = max(started, observed - DAY)
+                since = max(window_floor,
                     int(coverage.get('next_start_ms', started)) if not coverage.get('pagination_complete', True)
                     else int(history_checked) - 60000)
                 observed = clock_ms()
@@ -274,7 +275,8 @@ class AccountProfitMonitor:
                     fetched = []
                     coverage = coverage if baseline else {'pagination_complete': True, 'next_start_ms': observed,
                         'coverage': 'production_action_monitoring_no_historical_backfill'}
-                fetched = list({fill_key(f): f for f in pending.get('fills', []) + fetched}.values())
+                pending_fills = [f for f in pending.get('fills', []) if int(f['time']) >= window_floor]
+                fetched = list({fill_key(f): f for f in pending_fills + fetched}.values())
                 if not coverage.get('pagination_complete', True):
                     # Never publish a partial action and then publish its remaining
                     # pages as another action. Keep the successful baseline intact.

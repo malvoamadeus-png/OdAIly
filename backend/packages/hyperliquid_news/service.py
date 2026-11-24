@@ -130,7 +130,9 @@ class NewsMonitor:
                     fetched = []
                     coverage = {'pagination_complete': True, 'next_start_ms': start_ms,
                                 'coverage': 'not_queried_no_eligibility'}
-                fetched = list({fill_key(f): f for f in pending.get('fills', []) + fetched}.values())
+                min_pending_ms = max(start_ms, boundary + 1) if boundary is not None else start_ms
+                pending_fills = [f for f in pending.get('fills', []) if int(f['time']) >= min_pending_ms]
+                fetched = list({fill_key(f): f for f in pending_fills + fetched}.values())
                 if not coverage.get('pagination_complete', True):
                     self.store.save_global(pending_key, {'fills': fetched, 'coverage': coverage}, [])
                     self.store.record_error(address, now_ms, 'incomplete_history: baseline preserved', normal_schedule=True)

@@ -273,6 +273,22 @@ class PostgresNewsStore:
         return json.loads(value) if isinstance(value, str) else value
 
     @staticmethod
+    def _has_non_empty_metadata_in_transaction(conn, key: str) -> bool:
+        row = conn.execute(
+            "SELECT (pg_column_size(payload) > 64 OR payload NOT IN ('{}'::jsonb, '[]'::jsonb, 'null'::jsonb, '\"\"'::jsonb, 'false'::jsonb, '0'::jsonb)) AS has_value "
+            "FROM hl_news_metadata WHERE key=%s",
+            (key,),
+        ).fetchone()
+        if row is not None:
+            return bool(row["has_value"])
+        row = conn.execute(
+            "SELECT (pg_column_size(payload) > 64 OR btrim(payload) NOT IN ('', '{}', '[]', 'null', '\"\"', 'false', '0')) AS has_value "
+            "FROM hl_news_metadata_large WHERE key=%s",
+            (key,),
+        ).fetchone()
+        return bool(row and row["has_value"])
+
+    @staticmethod
     def _save_metadata_in_transaction(conn, key: str, payload: str) -> None:
         if len(payload.encode("utf-8")) > 200 * 1024 * 1024:
             conn.execute("DELETE FROM hl_news_metadata WHERE key=%s", (key,))
@@ -305,7 +321,7 @@ class PostgresNewsStore:
             if not cursors:return None,"history_cursor_missing"
             for prefix in ("normal_pending_fills:","account_pending_fills:"):
                 if prefix=="account_pending_fills:" and not account_active:continue
-                if self._metadata_in_transaction(conn,prefix+address,[]):return None,"pending_history"
+                if self._has_non_empty_metadata_in_transaction(conn,prefix+address):return None,"pending_history"
             return (tuple(cursors),account_active),None
 
         # Read and fence a bounded source batch while serialized with ingestion.
@@ -386,7 +402,7 @@ class PostgresNewsStore:
                 return {"fills":0,"phase":"retry","reason":"source_fills_changed"}
             for prefix in ("normal_pending_fills:","account_pending_fills:"):
                 if prefix=="account_pending_fills:" and not state[1]:continue
-                if self._metadata_in_transaction(conn,prefix+address,[]):return {"fills":0,"reason":"pending_history"}
+                if self._has_non_empty_metadata_in_transaction(conn,prefix+address):return {"fills":0,"reason":"pending_history"}
             conn.execute("INSERT INTO hl_news_compact_segments(address,start_ms,end_ms,payload,summary) VALUES(%s,%s,%s,%s::jsonb,%s::jsonb)",(address,int(rows[0]["time_ms"]),new_through,segment_json,summary_json))
             if snapshot["saved"]:
                 conn.execute("UPDATE hl_news_compact_history SET through_ms=%s,payload=%s::jsonb WHERE address=%s",(new_through,carry_json,address))
@@ -397,8 +413,14 @@ class PostgresNewsStore:
             return {"fills":len(rows),"phase":"incremental" if snapshot["saved"] else "building","through_ms":new_through}
 
     def metadata(self, key: str, default: Any) -> Any:
-        with self._connect() as conn:
-            return self._metadata_in_transaction(conn, key, default)
+        with self._connect(autocommit=True) as conn:
+            row = conn.execute("SELECT payload FROM hl_news_metadata WHERE key=%s", (key,)).fetchone()
+            if row is None:
+                row = conn.execute("SELECT payload FROM hl_news_metadata_large WHERE key=%s", (key,)).fetchone()
+        if not row:
+            return default
+        value = row["payload"]
+        return json.loads(value) if isinstance(value, str) else value
 
     def metadata_keys(self, prefix: str) -> list[str]:
         with self._connect() as conn:
@@ -645,6 +667,9 @@ class PostgresNewsStore:
             conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s", ("address_block:"+address,))
             if blocked:
                 conn.execute("DELETE FROM hl_news_account_pool WHERE address=%s", (address,))
+                for prefix in ("account_pending_fills:", "normal_pending_fills:"):
+                    conn.execute("DELETE FROM hl_news_metadata WHERE key=%s", (prefix + address,))
+                    conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s", (prefix + address,))
                 rows = conn.execute("SELECT event_key FROM hl_news_candidates WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(payload->'addresses') a(value) WHERE lower(a.value)=%s)", (address,)).fetchall()
                 for row in rows:
                     conn.execute("INSERT INTO hl_news_dispatch(event_key,signature,task_id,status,error,created_at,updated_at) VALUES(%s,%s,NULL,'address_blocked',NULL,%s,%s) ON CONFLICT(event_key) DO NOTHING", (row["event_key"], "blocked:"+row["event_key"], datetime.now(UTC), datetime.now(UTC)))

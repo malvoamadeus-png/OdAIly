@@ -657,6 +657,8 @@ class NewsStore:
                     conn.execute("UPDATE hl_news_address_names SET status='expired',next_check_ms=?,current_name=NULL WHERE address=? AND manual_locked=0", (int(datetime.now(UTC).timestamp()*1000), address))
             if blocked:
                 conn.execute('DELETE FROM hl_news_account_pool WHERE address=?', (address,))
+                for prefix in ('account_pending_fills:', 'normal_pending_fills:'):
+                    conn.execute('DELETE FROM hl_news_metadata WHERE key=?', (prefix + address,))
                 conn.execute("""INSERT OR IGNORE INTO hl_news_dispatch
                     SELECT event_key,'blocked:' || event_key,NULL,'address_blocked',NULL,?,?
                     FROM hl_news_candidates c WHERE EXISTS
