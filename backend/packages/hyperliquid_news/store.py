@@ -583,34 +583,13 @@ class NewsStore:
         return NamingStore(self.path).set_manual(address, note, updated_by=updated_by)
 
     def with_address_notes(self, event: dict[str, Any]) -> dict[str, Any]:
-        notes = {}
-        names = {}
-        name_evidence = {}
-        from .naming import NamingStore
+        from .naming import NamingStore, resolve_address_attributions
         naming = NamingStore(self.path)
-        for address in event.get('addresses', []):
-            address = address_key(address)
-            note_value = self.metadata('address_note:' + address, {})
-            notes[address] = note_value.get('note', '') if note_value.get('origin') != 'auto' else ''
-            row = naming.get(address)
-            if row and row.get('display_name') and not row.get('manual_locked'):
-                valid = row.get('status') == 'active'
-                if row.get('checked_ms') and event.get('observed_ms'):
-                    valid = valid and int(row['checked_ms']) <= int(event['observed_ms'])
-                if valid and row.get('kind') == 'position':
-                    event_side = event.get('evidence', {}).get('position') or {}
-                    event_coin = str(event.get('coin', ''))
-                    event_size = float(event_side.get('size', 0)) if event_side else 0
-                    valid = (event_coin == row.get('coin') and event_size != 0 and
-                             ('long' if event_size > 0 else 'short') == row.get('side'))
-                if valid and (row.get('evidence') or {}).get('selected_dimension') in ('asset_profit', 'asset_win_rate'):
-                    from .copy import naming_explanation
-                    valid = bool(naming_explanation(row, event))
-                if valid:
-                    names[address] = row['display_name']
-                    name_evidence[address] = {key: row.get(key) for key in ('current_name', 'kind', 'checked_ms', 'evidence', 'coverage')}
-        return {**event, 'evidence': {**event['evidence'], 'address_notes': notes,
-                                      'address_names': names, 'address_name_evidence': name_evidence}}
+        return resolve_address_attributions(
+            event,
+            get_note=lambda addr: self.metadata('address_note:' + addr, {}),
+            get_naming_row=naming.get,
+        )
 
     def blocked(self, address: str, *, conn=None) -> bool:
         if conn is None:

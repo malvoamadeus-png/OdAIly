@@ -149,7 +149,26 @@ class PostgresNamingStore:
                 raise ValueError("Unknown monitored address")
             value={"address":address,"note":note,"origin":"manual","updated_by":updated_by,"updated_at":now.isoformat()}
             self.store._save_metadata_in_transaction(conn, "address_note:"+address, json.dumps(value))
-            conn.execute("INSERT INTO hl_news_address_names(address,current_name,manual_locked,next_check_ms) VALUES(%s,%s,true,%s) ON CONFLICT(address) DO UPDATE SET current_name=excluded.current_name,manual_locked=true,inflight_token=NULL,inflight_started_ms=NULL,status='active'",(address,note or None,now_ms+7*24*60*60*1000))
+            conn.execute("""INSERT INTO hl_news_address_names(
+                address,current_name,kind,coin,side,status,manual_locked,evidence,coverage,reason,model,checked_ms,next_check_ms,inflight_token,inflight_started_ms,last_error,retry_after_ms
+            ) VALUES(%s,%s,'stable',NULL,NULL,'active',true,'{}'::jsonb,'{"manual_note": true}'::jsonb,'人工备注，程序不覆盖',NULL,0,%s,NULL,NULL,NULL,0)
+            ON CONFLICT(address) DO UPDATE SET
+                current_name=excluded.current_name,
+                kind='stable',
+                coin=NULL,
+                side=NULL,
+                status='active',
+                manual_locked=true,
+                evidence='{}'::jsonb,
+                coverage='{"manual_note": true}'::jsonb,
+                reason='人工备注，程序不覆盖',
+                model=NULL,
+                checked_ms=0,
+                next_check_ms=excluded.next_check_ms,
+                inflight_token=NULL,
+                inflight_started_ms=NULL,
+                last_error=NULL,
+                retry_after_ms=0""", (address, note or None, now_ms + 7 * 24 * 60 * 60 * 1000))
         return value
     def invalidate_position(self,address: str,*,coin: str|None=None,side: str|None=None,reason: str="position_evidence_invalidated",now_ms: int|None=None)->int:
         from .client import address_key

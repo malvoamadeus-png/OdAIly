@@ -63,7 +63,7 @@ def test_named_asset_win_rate_title_does_not_repeat_feature():
     assert result.content.count('胜率80%') == 1
 
 
-def test_manual_or_unavailable_name_uses_plain_subject_without_old_prefix():
+def test_unavailable_or_cleared_name_uses_plain_subject_without_old_prefix():
     event = named_event()
     event['evidence']['address_names'] = {}
     event['evidence']['address_name_evidence'] = {}
@@ -71,3 +71,21 @@ def test_manual_or_unavailable_name_uses_plain_subject_without_old_prefix():
         content='某地址增持77.04枚BTC多单，净增持价值约498万美元。其合约账户累计亏损约3544万美元。'), event)
     assert result.title == '某地址增持约498万美元BTC多单'
     assert result.content.count('亏损') == 1
+
+
+def test_manual_note_replaces_subject_in_title_and_body_without_ai_evidence():
+    event = named_event()
+    event['evidence']['address_names'] = {A: 'AguilaTrades'}
+    event['evidence']['address_notes'] = {A: ''}
+    event['evidence']['address_name_evidence'] = {}
+    draft = DraftBrief(
+        title='总亏损约2903万美元，某地址增持约1,651万美元BTC空单',
+        content='某地址合约账户（AguilaTrades）累计亏损约2,903万美元，窗口内增持约1,651万美元 BTC 空单。',
+    )
+    result = format_news(draft, event)
+    assert result.title == 'AguilaTrades增持约498万美元BTC多单'
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，AguilaTrades合约账户累计亏损约2,903万美元')
+    assert '某地址' not in result.content
+    assert '（AguilaTrades）' not in result.content
+    assert 'BTC交易净盈利' not in result.content
+    assert result.content.endswith('地址：' + A + '；总盈亏：亏损约3,544万美元')

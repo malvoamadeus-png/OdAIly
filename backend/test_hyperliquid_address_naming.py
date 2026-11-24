@@ -261,3 +261,63 @@ def test_invalid_model_reply_is_repaired_once_with_same_model(tmp_path):
     result=NamingWorker(store,names,ai_client=client)._choose(profile,A)
     assert result['name']=='普通地址0x12'
     assert client.calls==2
+
+
+def test_manual_note_completely_replaces_existing_ai_name_and_clears_details(tmp_path):
+    store, names = setup(tmp_path)
+    names.initialize()
+    claim = names.claim_due(now_ms=T, limit=1)[0]
+    ai_result = {
+        "name": "近期BTC高胜率交易员0x12",
+        "kind": "stable",
+        "reason": "近期窗口胜率80%",
+        "selected_dimension": "asset_win_rate",
+        "evidence_refs": ["asset_win_rate"],
+        "coverage": {"dimensions": [{"evidence_id": "asset_win_rate", "label": "胜率", "available": True,
+            "data": {"BTC": {"rounds": 12, "win_rate": "0.8", "window_start_ms": T - 100, "window_end_ms": T - 1}}}]},
+    }
+    assert names.save_result(A, token=claim["claim_token"], result=ai_result, now_ms=T, model="gpt-6-luna")
+    store.save_address_note(A, "AguilaTrades", updated_by="editor@example.com")
+    row = names.get(A)
+    assert row["manual_locked"] is True
+    assert row["current_name"] == "AguilaTrades"
+    assert row["model"] is None
+    assert row["checked_ms"] == 0
+    assert row["evidence"] == {}
+    assert row["reason"] == "人工备注，程序不覆盖"
+
+    from packages.hyperliquid_news.naming import naming_details
+    details = naming_details(store, A, now_ms=T + 10)
+    assert details["selected_evidence"] is None
+    assert details["dimensions"] == []
+    assert details["reason"] == "人工备注，程序不覆盖"
+
+    event = {
+        "addresses": [A],
+        "coin": "BTC",
+        "kinds": ["highlighted_address_action"],
+        "observed_ms": T + 10,
+        "evidence": {
+            "highlights": ["historical_loss"],
+            "previous_position": {"size": "0", "mark": "60000", "notional": "0"},
+            "position": {"size": "-275.41", "mark": "60000", "notional": "16524600"},
+            "actions": {"open_short_notional": "16524600"},
+            "history": {},
+        },
+    }
+    enriched = store.with_address_notes(event)
+    assert enriched["evidence"]["address_names"] == {A: "AguilaTrades"}
+    assert enriched["evidence"]["address_notes"] == {A: ""}
+    assert enriched["evidence"]["address_name_evidence"] == {}
+
+    final = format_news(
+        DraftBrief(
+            title="某地址增持约1,651万美元BTC空单",
+            content="2026年11月24日23:08至23:12，某地址开立价值约1,652万美元的BTC空单。",
+        ),
+        enriched,
+    )
+    assert final.title.startswith("AguilaTrades")
+    assert "2026 年 11 月 24 日 23:08 至 23:12，AguilaTrades开立" in final.content
+    assert "胜率" not in final.content
+    assert "某地址" not in final.title and "某地址" not in final.content

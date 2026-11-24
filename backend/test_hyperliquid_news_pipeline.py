@@ -607,15 +607,23 @@ def test_address_notes_are_persistent_literal_and_inserted_once(tmp_path):
     e, _ = event();e['kinds']=['highlighted_address_action'];e['evidence']['highlights']=['official_account_high_profit']
     e['evidence']['history']={'official_account_performance':{'windows':{'allTime':{'pnl':'173000000'}}}}
     e=store.with_address_notes(e)
-    result=format_news(DraftBrief(title='总盈利超1亿美元地址加仓BTC空单', content='某地址合约账户累计收益超过1亿美元。其加仓BTC空单。'),e)
-    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，某地址合约账户（Wintermute做市地址）累计收益')
-    assert format_news(result,e).content.count('Wintermute做市地址')==1
+    draft = DraftBrief(title='总盈利超1亿美元地址加仓BTC空单', content='某地址合约账户累计收益超过1亿美元。其加仓BTC空单。')
+    result=format_news(draft,e)
+    assert result.title=='Wintermute做市地址增持500万美元STRK多单'
+    assert result.content.startswith('Odaily星球日报讯 据Odaily监测，Wintermute做市地址合约账户累计收益')
+    assert '某地址' not in result.content
+    assert format_news(result,e).content.count('Wintermute')==1
     assert dashboard(store,view='addresses')['addresses'][0]['note']=='Wintermute做市地址'
     for invalid in ('a\nb','名字（嵌套）','x'*81):
         with pytest.raises(ValueError):store.save_address_note(A,invalid,updated_by='editor')
     store.save_address_note(A,'',updated_by='editor')
-    assert store.with_address_notes(e)['evidence']['address_notes'][A]==''
-    assert 'Wintermute' not in format_news(result,store.with_address_notes(e)).content
+    cleared = store.with_address_notes(e)
+    assert cleared['evidence']['address_notes'][A]==''
+    assert A not in cleared['evidence']['address_names']
+    cleared_result = format_news(draft, cleared)
+    assert 'Wintermute' not in cleared_result.content
+    assert 'Wintermute' not in cleared_result.title
+    assert cleared_result.title=='某地址增持500万美元STRK多单'
 
 
 def test_address_search_covers_full_pool_and_notes(tmp_path):

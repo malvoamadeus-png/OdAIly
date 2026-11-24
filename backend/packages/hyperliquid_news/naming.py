@@ -217,10 +217,27 @@ class NamingStore:
             value = {"address": address, "note": note, "origin": "manual", "updated_by": updated_by, "updated_at": now}
             conn.execute("""INSERT INTO hl_news_metadata(key,payload) VALUES(?,?)
                 ON CONFLICT(key) DO UPDATE SET payload=excluded.payload""", ("address_note:" + address, encode(value)))
-            conn.execute("""INSERT INTO hl_news_address_names(address,current_name,manual_locked,next_check_ms)
-                VALUES(?,?,1,?) ON CONFLICT(address) DO UPDATE SET current_name=excluded.current_name,
-                manual_locked=1,inflight_token=NULL,inflight_started_ms=NULL,status='active'""",
-                (address, note or None, _now() + REVIEW_MS))
+            conn.execute("""INSERT INTO hl_news_address_names(
+                address,current_name,kind,coin,side,status,manual_locked,evidence,coverage,reason,model,checked_ms,next_check_ms,inflight_token,inflight_started_ms,last_error,retry_after_ms
+            ) VALUES(?,?,'stable',NULL,NULL,'active',1,'{}',?, '人工备注，程序不覆盖',NULL,0,?,NULL,NULL,NULL,0)
+            ON CONFLICT(address) DO UPDATE SET
+                current_name=excluded.current_name,
+                kind='stable',
+                coin=NULL,
+                side=NULL,
+                status='active',
+                manual_locked=1,
+                evidence='{}',
+                coverage=excluded.coverage,
+                reason='人工备注，程序不覆盖',
+                model=NULL,
+                checked_ms=0,
+                next_check_ms=excluded.next_check_ms,
+                inflight_token=NULL,
+                inflight_started_ms=NULL,
+                last_error=NULL,
+                retry_after_ms=0""",
+                (address, note or None, encode({"manual_note": True}), _now() + REVIEW_MS))
         return value
 
     def invalidate_position(self, address: str, *, coin: str | None = None, side: str | None = None,
@@ -347,6 +364,67 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
     return profile
 
 
+def resolve_address_attributions(
+    event: dict[str, Any],
+    *,
+    get_note,
+    get_naming_row,
+) -> dict[str, Any]:
+    """Resolve address subject names: manual notes completely replace AI naming."""
+    notes, names, name_evidence = {}, {}, {}
+    for address in event.get("addresses", []):
+        address = address_key(address)
+        note_value = get_note(address) or {}
+        row = get_naming_row(address)
+        has_manual_note = (
+            isinstance(note_value, dict)
+            and note_value.get("origin") != "auto"
+            and ("origin" in note_value or bool(note_value.get("note")))
+        )
+        is_manual = bool(row and row.get("manual_locked")) or has_manual_note
+        if is_manual:
+            manual_note = (
+                str(note_value.get("note") or "").strip()
+                if has_manual_note
+                else str((row or {}).get("current_name") or "").strip()
+            )
+            notes[address] = ""
+            if manual_note:
+                names[address] = manual_note
+            continue
+        notes[address] = ""
+        if row and row.get("display_name"):
+            valid = row.get("status") == "active"
+            if row.get("checked_ms") and event.get("observed_ms"):
+                valid = valid and int(row["checked_ms"]) <= int(event["observed_ms"])
+            if valid and row.get("kind") == "position":
+                position = (event.get("evidence") or {}).get("position") or {}
+                size = float(position.get("size", 0)) if position else 0
+                valid = (
+                    str(event.get("coin", "")) == row.get("coin")
+                    and size != 0
+                    and ("long" if size > 0 else "short") == row.get("side")
+                )
+            if valid and (row.get("evidence") or {}).get("selected_dimension") in ("asset_profit", "asset_win_rate"):
+                from .copy import naming_explanation
+                valid = bool(naming_explanation(row, event))
+            if valid:
+                names[address] = row["display_name"]
+                name_evidence[address] = {
+                    key: row.get(key)
+                    for key in ("current_name", "kind", "checked_ms", "evidence", "coverage")
+                }
+    return {
+        **event,
+        "evidence": {
+            **event["evidence"],
+            "address_notes": notes,
+            "address_names": names,
+            "address_name_evidence": name_evidence,
+        },
+    }
+
+
 def naming_details(store: NewsStore, address: str, *, now_ms: int | None = None) -> dict[str, Any]:
     address = address_key(address)
     now_ms = now_ms or _now()
@@ -355,6 +433,28 @@ def naming_details(store: NewsStore, address: str, *, now_ms: int | None = None)
     row = names.get(address)
     if row is None:
         raise ValueError("Unknown monitored address")
+    if row.get("manual_locked"):
+        cleaned = {
+            **row,
+            "kind": "stable",
+            "coin": None,
+            "side": None,
+            "evidence": {},
+            "coverage": {"manual_note": True},
+            "reason": "人工备注，程序不覆盖",
+            "model": None,
+            "checked_ms": 0,
+        }
+        return {
+            "naming": cleaned,
+            "dimensions": [],
+            "selected_dimensions": None,
+            "selected_evidence": None,
+            "reason": cleaned["reason"],
+            "checked_ms": 0,
+            "next_check_ms": row.get("next_check_ms"),
+            "last_error": None,
+        }
     dimensions = (row.get("coverage") or {}).get("dimensions", [])
     selected = (row.get("evidence") or {}).get("selected_dimension")
     selected_item = next((item for item in dimensions if item.get("evidence_id") == selected), None)
