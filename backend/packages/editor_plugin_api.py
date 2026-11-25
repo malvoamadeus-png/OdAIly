@@ -1048,7 +1048,7 @@ class EditorPluginNewsGenService:
                          page=int(payload.get('page', 0)),
                          scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
                          view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
-                         address_status=payload.get('address_status', 'all'))
+                         address_status=payload.get('address_status', 'active'))
 
     def get_hyperliquid_address_naming_details(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor

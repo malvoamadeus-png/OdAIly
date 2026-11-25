@@ -20,7 +20,8 @@ REVIEW_LOOKBACK_DAYS = 3
 MAX_ANALYSIS_BATCH = 50
 OUTPUT_TOKEN_RESERVE = 1_200
 MAX_ANALYSIS_ATTEMPTS = 3
-EVENT_SCAN_VERSION = 4
+SOURCE_REJECTION_LIMIT = 3
+EVENT_SCAN_VERSION = 5
 EVENT_ANALYSIS_VERSION = 4
 RECOMMENDATIONS = {"priority", "consider", "drop"}
 RECOMMENDATION_LABELS = {"priority": "优先考虑", "consider": "可考虑", "drop": "不建议跟进"}
@@ -108,6 +109,41 @@ def _decode(value: Any, default: Any) -> Any:
         return json.loads(str(value)) if value not in (None, "") else default
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+def _source_identity(clues: Any) -> str | None:
+    decoded = _decode(clues, {})
+    if not isinstance(decoded, dict):
+        return None
+    accounts = decoded.get("xAccounts")
+    if isinstance(accounts, list) and accounts and str(accounts[0]).strip():
+        return f"x:{str(accounts[0]).casefold().strip().lstrip('@')}"
+    domains = decoded.get("domains")
+    if isinstance(domains, list) and domains and str(domains[0]).strip():
+        return f"domain:{str(domains[0]).casefold().strip().removeprefix('www.')}"
+    return None
+
+
+def _source_identity_is_tracked(
+    identity: str | None, *, handles: set[str], domains: set[str],
+) -> bool:
+    if not identity:
+        return False
+    if identity.startswith("x:"):
+        return identity[2:] in handles
+    if identity.startswith("domain:"):
+        host = identity[7:].casefold().removeprefix("www.")
+        return any(host == known or host.endswith(f".{known}") for known in domains)
+    return False
+
+
+def _is_suppressed_pending_source(
+    item: dict[str, Any], *, handles: set[str], domains: set[str], rejected: set[str],
+) -> bool:
+    if item.get("status") != "pending":
+        return False
+    identity = _source_identity(item.get("clues"))
+    return identity in rejected or _source_identity_is_tracked(identity, handles=handles, domains=domains)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -220,7 +256,7 @@ class AIReviewRepository:
             updated = _parse_datetime(row["source_updated_at"] or row["created_at"])
             legacy_key = not key.startswith("event-source:")
             stale_category = str(row["category"]) not in allowed_categories
-            stale_recent = bool(updated and updated >= since and key not in keep_keys)
+            stale_recent = bool(updated and updated >= since and key not in keep_keys and row["status"] == "pending")
             expired_pending = bool(updated and updated < since and row["status"] == "pending")
             if legacy_key or stale_category or stale_recent or expired_pending:
                 stale_keys.append(key)
@@ -309,6 +345,8 @@ class AIReviewRepository:
 
     def list_items(
         self, *, status: str = "all", category: str = "all", offset: int = 0, limit: int = 30,
+        tracked_handles: set[str] | None = None, tracked_domains: set[str] | None = None,
+        rejected_sources: set[str] | None = None,
     ) -> dict[str, Any]:
         clauses, params = ["item_type='event'", "analysis_status='completed'", "recommendation='priority'"], []
         if status in STATUS_VALUES:
@@ -318,15 +356,22 @@ class AIReviewRepository:
             clauses.append("category=?")
             params.append(category)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
-        total = int(self.db.execute(f"SELECT count(*) FROM ai_review_items{where}", params).fetchone()[0])
         safe_limit, safe_offset = min(100, max(1, int(limit))), max(0, int(offset))
         rows = self.db.execute(
             f"SELECT * FROM ai_review_items{where} ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END,"
-            "datetime(COALESCE(source_updated_at,created_at)) DESC,id DESC LIMIT ? OFFSET ?",
-            [*params, safe_limit, safe_offset],
+            "datetime(COALESCE(source_updated_at,created_at)) DESC,id DESC",
+            params,
         ).fetchall()
+        handles = tracked_handles or set()
+        domains = tracked_domains or set()
+        rejected = rejected_sources or set()
+        items = [self._item(row) for row in rows]
+        items = [item for item in items if not _is_suppressed_pending_source(
+            item, handles=handles, domains=domains, rejected=rejected,
+        )]
+        total = len(items)
         return {
-            "items": [self._item(row) for row in rows], "total": total, "offset": safe_offset, "limit": safe_limit,
+            "items": items[safe_offset:safe_offset + safe_limit], "total": total, "offset": safe_offset, "limit": safe_limit,
             "usage": self.usage(_local_date(datetime.now(UTC))), "weekly": self.weekly_summary(),
         }
 
@@ -374,9 +419,31 @@ class AIReviewRepository:
                 "UPDATE ai_review_items SET status=?,human_decision=?,feedback_note=?,decision_by=?,decided_at=?,updated_at=? WHERE item_key=?",
                 (decision, decision, note[:500], actor[:200], now, now, item_key),
             )
+            identity = _source_identity(row["clues_json"])
+            if decision == "rejected" and identity in self.rejected_source_identities():
+                self._delete_pending_for_source(identity)
         item = self.get_item(item_key)
         assert item is not None
         return item
+
+    def rejected_source_identities(self) -> set[str]:
+        rows = self.db.execute(
+            "SELECT clues_json FROM ai_review_items WHERE item_type='event' AND status='rejected'"
+        ).fetchall()
+        counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            identity = _source_identity(row["clues_json"])
+            if identity:
+                counts[identity] += 1
+        return {identity for identity, count in counts.items() if count >= SOURCE_REJECTION_LIMIT}
+
+    def _delete_pending_for_source(self, identity: str) -> None:
+        rows = self.db.execute(
+            "SELECT item_key,clues_json FROM ai_review_items WHERE item_type='event' AND status='pending'"
+        ).fetchall()
+        keys = [row["item_key"] for row in rows if _source_identity(row["clues_json"]) == identity]
+        if keys:
+            self.db.executemany("DELETE FROM ai_review_items WHERE item_key=?", ((key,) for key in keys))
 
     def has_pending_analysis(self) -> bool:
         return self.db.execute(
@@ -596,10 +663,13 @@ class AIReviewService:
         self.repository.close()
 
     def list_items(self, payload: dict[str, Any]) -> dict[str, Any]:
+        tracked_handles, tracked_domains = self._known_source_clues()
         return self.repository.list_items(
             status=str(payload.get("status") or "all"),
             category=str(payload.get("category") or "all"),
             offset=int(payload.get("offset") or 0), limit=int(payload.get("limit") or 30),
+            tracked_handles=tracked_handles, tracked_domains=tracked_domains,
+            rejected_sources=self.repository.rejected_source_identities(),
         )
 
     def get_item(self, item_key: str) -> dict[str, Any] | None:
@@ -677,6 +747,7 @@ class AIReviewService:
             for row in rows:
                 events[str(row["event_id"])].append(row)
             known_handles, known_domains = self._known_source_clues()
+            rejected_sources = self.repository.rejected_source_identities()
             retained_keys: set[str] = set()
             for event_id, sources in events.items():
                 if any(self._is_hyperbot_source(row) for row in sources):
@@ -723,6 +794,8 @@ class AIReviewService:
                     )
                     for origin in origins:
                         identity = str(origin["identity"])
+                        if origin["tracked"] or identity in rejected_sources:
+                            continue
                         candidate = candidates.setdefault(identity, {"origin": dict(origin), "urls": set(), "evidence": []})
                         candidate["urls"].update(origin.get("urls") or [origin["url"]])
                         article_evidence = {
@@ -775,6 +848,7 @@ class AIReviewService:
 
         inserted = 0
         retained_keys: set[str] = set()
+        rejected_sources = self.repository.rejected_source_identities()
         event_cursor: tuple[datetime, str] | None = None
         while True:
             events: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -855,6 +929,8 @@ class AIReviewService:
                     article_url = _publisher_article_url(outlet, str(source["source_item_id"] or ""), str(source["source_url"] or ""))
                     for origin in _extract_original_sources(source, known_handles=known_handles, known_domains=known_domains):
                         identity = str(origin["identity"])
+                        if origin["tracked"] or identity in rejected_sources:
+                            continue
                         candidate = candidates.setdefault(identity, {"origin": dict(origin), "urls": set(), "evidence": []})
                         candidate["urls"].update(origin.get("urls") or [origin["url"]])
                         article = {"source": PUBLISHER_LABELS.get(outlet, str(source["source"])), "sourceKind": "competitor", "url": article_url or None,
@@ -898,6 +974,8 @@ class AIReviewService:
         return any(host == known or host.endswith(f".{known}") for known in configured)
 
     def _known_source_clues(self) -> tuple[set[str], set[str]]:
+        if self.storage_backend == "postgres":
+            return self._known_source_clues_postgres()
         handles: set[str] = set()
         domains = set(TRACKED_SOURCE_DOMAINS)
         try:
@@ -932,6 +1010,34 @@ class AIReviewService:
                     ))
             finally:
                 hot.close()
+        return handles, domains
+
+    @staticmethod
+    def _known_source_clues_postgres() -> tuple[set[str], set[str]]:
+        from packages.common.pg_native import connect_postgres
+
+        handles: set[str] = set()
+        domains = set(TRACKED_SOURCE_DOMAINS)
+        with connect_postgres(schema="main", application_name="odaily-ai-review-tracked-sources") as conn:
+            if conn.execute("SELECT to_regclass('main.x_capture_accounts') AS relation").fetchone()["relation"]:
+                handles.update(
+                    str(row["username_lower"]).casefold().lstrip("@")
+                    for row in conn.execute("SELECT username_lower FROM main.x_capture_accounts WHERE enabled=true")
+                )
+            if conn.execute("SELECT to_regclass('main.non_mainstream_media_sources') AS relation").fetchone()["relation"]:
+                for row in conn.execute("SELECT homepage_url FROM main.non_mainstream_media_sources WHERE enabled=true"):
+                    host = (urlparse(str(row["homepage_url"] or "")).hostname or "").casefold().removeprefix("www.")
+                    if host:
+                        domains.add(host)
+        with connect_postgres(schema="hottopic", application_name="odaily-ai-review-tracked-sources") as conn:
+            if conn.execute("SELECT to_regclass('hottopic.hottopic_accounts') AS relation").fetchone()["relation"]:
+                handles.update(
+                    str(row["screen_name_lower"]).casefold().lstrip("@")
+                    for row in conn.execute(
+                        "SELECT screen_name_lower FROM hottopic.hottopic_accounts WHERE status='followed' AND "
+                        "(hot_topic_enabled OR market_sentiment_enabled OR project_promotion_enabled OR investment_leads_enabled)"
+                    )
+                )
         return handles, domains
 
     @staticmethod

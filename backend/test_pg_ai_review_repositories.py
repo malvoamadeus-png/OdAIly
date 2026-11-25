@@ -268,10 +268,9 @@ def test_postgres_manual_rejection_creates_independent_case_without_writer_snaps
     assert case["writer_model"] is None
     assert case["draft_content"] is None
     assert case["final_content"] == content
-    expected_path = "manual_publication" if with_manual_metadata else "unknown_publication"
+    expected_path = "manual_publication"
     assert case["audit_result"]["manual_rejection"]["authoring_path"] == expected_path
-    prompt_path = "manual_publication_without_writer1_snapshot" if with_manual_metadata else "unknown_source_without_writer1_snapshot"
-    assert prompt_path in build_prompt(case)
+    assert "manual_publication_without_writer1_snapshot" in build_prompt(case)
 
     result = parse_output(json.dumps({
         "verdict": "reviewer_correct_unattributed", "confidence": "medium", "rationale": "审核指出的问题成立，但无 Writer1 草稿可供归因。",

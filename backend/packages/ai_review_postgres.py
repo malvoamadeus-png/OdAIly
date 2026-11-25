@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres
-from packages.ai_review import DAILY_TOKEN_LIMIT, MAX_ANALYSIS_ATTEMPTS, RECOMMENDATION_LABELS, REVIEW_LOOKBACK_DAYS, STATUS_VALUES
+from packages.ai_review import (
+    DAILY_TOKEN_LIMIT, MAX_ANALYSIS_ATTEMPTS, RECOMMENDATION_LABELS, REVIEW_LOOKBACK_DAYS,
+    SOURCE_REJECTION_LIMIT, STATUS_VALUES, _is_suppressed_pending_source, _source_identity,
+)
 
 
 SCHEMA_SQL = """
@@ -127,7 +131,7 @@ class PostgresAIReviewRepository:
             cursor = conn.execute(
                 "DELETE FROM ai_review_items WHERE item_type='event' AND ("
                 "item_key NOT LIKE 'event-source:%%' OR category<>ALL(%s) OR "
-                "(COALESCE(source_updated_at,created_at)>=%s AND NOT(item_key=ANY(%s))) OR "
+                "(COALESCE(source_updated_at,created_at)>=%s AND NOT(item_key=ANY(%s)) AND status='pending') OR "
                 "(COALESCE(source_updated_at,created_at)<%s AND status='pending'))",
                 (list(allowed), since_utc, list(keep_keys), since_utc),
             )
@@ -164,19 +168,52 @@ class PostgresAIReviewRepository:
                 if row["status"] == "accepted" and decision == "accepted":
                     return _item(row)
                 conn.execute("UPDATE ai_review_items SET status=%s,human_decision=%s,feedback_note=%s,decision_by=%s,decided_at=clock_timestamp(),updated_at=clock_timestamp() WHERE item_key=%s", (decision, decision, note[:500], actor[:200], item_key))
+                identity = _source_identity(row["clues_json"])
+                if decision == "rejected" and identity in self._rejected_source_identities(conn):
+                    self._delete_pending_for_source(conn, identity)
         item = self.get_item(item_key)
         assert item is not None
         return item
 
-    def list_items(self, *, status: str = "all", category: str = "all", offset: int = 0, limit: int = 30) -> dict[str, Any]:
+    @staticmethod
+    def _rejected_source_identities(conn) -> set[str]:
+        rows = conn.execute("SELECT clues_json FROM ai_review_items WHERE item_type='event' AND status='rejected'").fetchall()
+        counts: dict[str, int] = defaultdict(int)
+        for row in rows:
+            identity = _source_identity(row["clues_json"])
+            if identity:
+                counts[identity] += 1
+        return {identity for identity, count in counts.items() if count >= SOURCE_REJECTION_LIMIT}
+
+    def rejected_source_identities(self) -> set[str]:
+        with self.connect() as conn:
+            return self._rejected_source_identities(conn)
+
+    @staticmethod
+    def _delete_pending_for_source(conn, identity: str) -> None:
+        rows = conn.execute("SELECT item_key,clues_json FROM ai_review_items WHERE item_type='event' AND status='pending'").fetchall()
+        keys = [row["item_key"] for row in rows if _source_identity(row["clues_json"]) == identity]
+        if keys:
+            conn.execute("DELETE FROM ai_review_items WHERE item_key=ANY(%s)", (keys,))
+
+    def list_items(
+        self, *, status: str = "all", category: str = "all", offset: int = 0, limit: int = 30,
+        tracked_handles: set[str] | None = None, tracked_domains: set[str] | None = None,
+        rejected_sources: set[str] | None = None,
+    ) -> dict[str, Any]:
         clauses=["item_type='event'","analysis_status='completed'","recommendation='priority'"]; params=[]
         if status in STATUS_VALUES: clauses.append("status=%s"); params.append(status)
         if category not in {"","all"}: clauses.append("category=%s"); params.append(category)
         where=" WHERE "+" AND ".join(clauses)
         with self.connect() as conn:
-            total=int(conn.execute("SELECT count(*) AS count FROM ai_review_items"+where,params).fetchone()["count"])
-            rows=conn.execute("SELECT * FROM ai_review_items"+where+" ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END,COALESCE(source_updated_at,created_at) DESC,id DESC LIMIT %s OFFSET %s",(*params,min(100,max(1,limit)),max(0,offset))).fetchall()
-        return {"items":[_item(row) for row in rows],"total":total,"offset":max(0,offset),"limit":min(100,max(1,limit)),"usage":self.usage(datetime.now(UTC).date().isoformat()),"weekly":self.weekly_summary()}
+            rows=conn.execute("SELECT * FROM ai_review_items"+where+" ORDER BY CASE WHEN status='pending' THEN 0 ELSE 1 END,COALESCE(source_updated_at,created_at) DESC,id DESC",params).fetchall()
+        handles, domains, rejected = tracked_handles or set(), tracked_domains or set(), rejected_sources or set()
+        items = [_item(row) for row in rows]
+        items = [item for item in items if not _is_suppressed_pending_source(
+            item, handles=handles, domains=domains, rejected=rejected,
+        )]
+        safe_limit, safe_offset = min(100, max(1, limit)), max(0, offset)
+        return {"items":items[safe_offset:safe_offset+safe_limit],"total":len(items),"offset":safe_offset,"limit":safe_limit,"usage":self.usage(datetime.now(UTC).date().isoformat()),"weekly":self.weekly_summary()}
 
     def weekly_summary(self) -> dict[str, int | float]:
         cutoff = datetime.now(UTC) - timedelta(days=REVIEW_LOOKBACK_DAYS)

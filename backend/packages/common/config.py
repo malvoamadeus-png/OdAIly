@@ -26,6 +26,7 @@ DEFAULT_WATCHLIST = [
     "GOOGL",
     "MSFT",
     "AMZN",
+    "ANT",
     "AVGO",
     "TSM",
     "META",

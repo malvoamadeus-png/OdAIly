@@ -6,7 +6,7 @@ Run from the repository root with no arguments on Windows or WSL:
     python scripts/import_newsflash_views.py
 
 The script intentionally uses the Windows OpenSSH client configured for this
-workspace. It performs a read-only production comparison first, then uploads
+workspace. It performs a read-only PostgreSQL comparison first, then uploads
 matching workbooks to /tmp in modification-time order. Newer workbooks run
 last and may overwrite values from older workbooks.
 """
@@ -39,6 +39,7 @@ else:
     SSH_CONFIG = "C:/Users/A/.ssh/config"
 SSH_ALIAS = "odaily-official"
 REMOTE_ROOT = "/opt/OdAIly"
+REMOTE_POSTGRES_ENV = "/etc/odaily/postgresql.env"
 REQUIRED_HEADERS = {"ID", "标题", "操作人", "链接", "发布时间", "阅读量", "是否推送", "推送时间"}
 XML_NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
@@ -171,26 +172,35 @@ def ssh_command(remote_command: str, *, input_text: str | None = None) -> str:
     return run_process([str(SSH), "-F", SSH_CONFIG, SSH_ALIAS, remote_command], input_text=input_text)
 
 
+def remote_python(command: str) -> str:
+    return (
+        f"cd {shlex.quote(REMOTE_ROOT)} && "
+        f"set -a && . {shlex.quote(REMOTE_POSTGRES_ENV)} && set +a && "
+        'test "${ODAILY_STORAGE_BACKEND:-}" = postgres && '
+        f"PYTHONPATH=backend {command}"
+    )
+
+
 def remote_state(ids: set[str]) -> tuple[set[str], set[str]]:
     payload = json.dumps(sorted(ids), ensure_ascii=False)
     code = """
-import json, sqlite3, sys
+import json, sys
+from packages.common.pg_native import connect_postgres
 ids = json.load(sys.stdin)
 facts = set()
 references = set()
-with sqlite3.connect('data/database/odaily.sqlite') as conn:
+with connect_postgres(schema='main', application_name='odaily-newsflash-view-import-check') as conn:
     for offset in range(0, len(ids), 500):
         batch = ids[offset:offset + 500]
-        marks = ','.join('?' for _ in batch)
-        facts.update(row[0] for row in conn.execute(
-            f'SELECT source_item_id FROM newsflash_operation_facts WHERE source_item_id IN ({marks})', batch
+        facts.update(str(row['source_item_id']) for row in conn.execute(
+            'SELECT source_item_id FROM newsflash_operation_facts WHERE source_item_id = ANY(%s)', (batch,)
         ))
-        references.update(row[0] for row in conn.execute(
-            f'SELECT source_item_id FROM odaily_reference_items WHERE source_item_id IN ({marks})', batch
+        references.update(str(row['source_item_id']) for row in conn.execute(
+            'SELECT source_item_id FROM odaily_reference_items WHERE source_item_id = ANY(%s)', (batch,)
         ))
 print(json.dumps({'facts': sorted(facts), 'references': sorted(references)}, ensure_ascii=False))
 """
-    output = ssh_command(f"cd {shlex.quote(REMOTE_ROOT)} && .venv/bin/python -c {shlex.quote(code)}", input_text=payload)
+    output = ssh_command(remote_python(f".venv/bin/python -c {shlex.quote(code)}"), input_text=payload)
     result = json.loads(output.strip() or "{}")
     return set(result.get("facts", [])), set(result.get("references", []))
 
@@ -199,11 +209,10 @@ def import_workbook(info: WorkbookInfo, index: int) -> None:
     remote_name = f"/tmp/odaily-newsflash-view-import-{os.getpid()}-{index}-{uuid.uuid4().hex}.xlsx"
     try:
         run_process([str(SCP), "-F", SSH_CONFIG, windows_local_path(info.path), f"{SSH_ALIAS}:{remote_name}"])
-        command = (
-            f"cd {shlex.quote(REMOTE_ROOT)} && .venv/bin/python backend/src/main.py "
+        command = remote_python(
+            f".venv/bin/python backend/src/main.py "
             f"newsflash-ops-import-xlsx --path {shlex.quote(remote_name)} "
-            f"--start-date {info.start_date.isoformat()} --end-date {info.end_date.isoformat()} "
-            ""
+            f"--start-date {info.start_date.isoformat()} --end-date {info.end_date.isoformat()}"
         )
         output = ssh_command(command)
         print(output, end="")
@@ -235,7 +244,7 @@ def main() -> int:
     print("Local XLSX coverage:")
     for info in workbooks:
         print(f"  {info.path.relative_to(ROOT)}: {info.weeks}")
-    print("Server comparison:")
+    print("PostgreSQL comparison:")
     for key in sorted(local_week_ids):
         ids = local_week_ids[key]
         count = len(ids)
@@ -255,7 +264,7 @@ def main() -> int:
     print(f"Importing {len(workbooks)} workbook(s) in modification-time order; newest runs last...")
     for index, info in enumerate(workbooks, start=1):
         import_workbook(info, index)
-    print("Import complete. Newer workbook values were applied last; remote temporary files were removed.")
+    print("PostgreSQL import complete. Newer workbook values were applied last; remote temporary files were removed.")
     return 0
 
 
