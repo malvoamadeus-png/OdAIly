@@ -211,7 +211,16 @@ class PostgresNewsStore:
         blocked = address_not_blocked_sql("a.address")
         with self._connect() as conn:
             if normal_schedule:
-                rows = conn.execute(f"SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address) WHERE {blocked} ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s", (limit,)).fetchall()
+                rows = conn.execute(f"""SELECT a.* FROM hl_news_addresses a LEFT JOIN hl_news_normal_schedule s USING(address)
+                    WHERE {blocked}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM hl_news_account_pool p
+                        JOIN hl_news_normal_state ns USING(address)
+                        WHERE p.address=a.address AND p.tier='non_perp'
+                        AND COALESCE(ns.state->'positions','{{}}'::jsonb)='{{}}'::jsonb
+                        AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(a.sources) src WHERE src->>'kind'='manual')
+                    )
+                    ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT %s""", (limit,)).fetchall()
             else:
                 rows = conn.execute(f"SELECT a.* FROM hl_news_addresses a WHERE {blocked} ORDER BY a.last_polled_ms,a.address LIMIT %s", (limit,)).fetchall()
         return [dict(row) for row in rows]
@@ -585,11 +594,16 @@ class PostgresNewsStore:
             return []
         blocked = address_not_blocked_sql("hl_news_account_pool.address")
         with self._connect() as conn:
-            probe = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT 1", (now_ms,)).fetchall()
-            active = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=true AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT %s", (now_ms, limit-len(probe))).fetchall()
+            probe = conn.execute(f"SELECT hl_news_account_pool.*, a.sources FROM hl_news_account_pool JOIN hl_news_addresses a USING(address) WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,hl_news_account_pool.address LIMIT 1", (now_ms,)).fetchall()
+            active = conn.execute(f"SELECT hl_news_account_pool.*, a.sources FROM hl_news_account_pool JOIN hl_news_addresses a USING(address) WHERE {blocked} AND qualified=true AND next_poll_ms<=%s ORDER BY next_poll_ms,hl_news_account_pool.address LIMIT %s", (now_ms, limit-len(probe))).fetchall()
             remaining = limit-len(probe)-len(active)
-            extra = conn.execute(f"SELECT * FROM hl_news_account_pool WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,address LIMIT %s OFFSET %s", (now_ms, max(0, remaining), len(probe))).fetchall()
+            extra = conn.execute(f"SELECT hl_news_account_pool.*, a.sources FROM hl_news_account_pool JOIN hl_news_addresses a USING(address) WHERE {blocked} AND qualified=false AND next_poll_ms<=%s ORDER BY next_poll_ms,hl_news_account_pool.address LIMIT %s OFFSET %s", (now_ms, max(0, remaining), len(probe))).fetchall()
         return [dict(row) for row in [*active, *probe, *extra]]
+
+    def account_pool_map(self) -> dict[str, dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT address,tier,qualified FROM hl_news_account_pool").fetchall()
+        return {row["address"]: {"tier": row["tier"], "qualified": bool(row["qualified"])} for row in rows}
 
     def update_account_schedule(self, address: str, *, now_ms: int, tier: str, interval_ms: int, qualified: bool, last_action_ms: int = 0) -> None:
         with self._connect() as conn:
@@ -699,10 +713,10 @@ class PostgresNewsStore:
             conn.execute("UPDATE hl_news_addresses SET last_polled_ms=%s,error=NULL WHERE address=%s", (now_ms,address))
             if table == "hl_news_normal_state":
                 conn.execute("INSERT INTO hl_news_normal_schedule(address,last_polled_ms) VALUES(%s,%s) ON CONFLICT(address) DO UPDATE SET last_polled_ms=excluded.last_polled_ms", (address,now_ms))
-            self._refresh_auto_position_name(conn, address, now_ms)
+            self._refresh_auto_position_name(conn, address, now_ms, is_first_observation=old is None)
 
     @staticmethod
-    def _refresh_auto_position_name(conn, address: str, now_ms: int) -> None:
+    def _refresh_auto_position_name(conn, address: str, now_ms: int, *, is_first_observation: bool = False) -> None:
         name = conn.execute("SELECT kind,coin,side,manual_locked,current_name FROM hl_news_address_names WHERE address=%s", (address,)).fetchone()
         if name and name["kind"] == "position" and not name["manual_locked"]:
             rows = conn.execute("SELECT observed_ms,state FROM hl_news_normal_state WHERE address=%s UNION ALL SELECT observed_ms,state FROM hl_news_state WHERE address=%s", (address,address)).fetchall()
@@ -714,6 +728,8 @@ class PostgresNewsStore:
             if not position or size == 0 or (1 if size > 0 else -1) != expected:
                 conn.execute("UPDATE hl_news_address_names SET status='expired',current_name=NULL,reason='position_changed_or_closed',next_check_ms=%s,retry_after_ms=0,inflight_token=NULL,inflight_started_ms=NULL WHERE address=%s AND manual_locked=false AND kind='position'", (now_ms,address))
                 conn.execute("DELETE FROM hl_news_metadata WHERE key=%s AND (payload::jsonb)->>'origin'='auto'", ("address_note:"+address,))
+        if name and not name["manual_locked"] and is_first_observation and (name["current_name"] is None or str(name["current_name"]).startswith("普通地址")):
+            conn.execute("UPDATE hl_news_address_names SET next_check_ms=%s,retry_after_ms=0 WHERE address=%s", (now_ms, address))
 
     def wake_unqualified_accounts(self, now_ms: int) -> int:
         with self._connect() as conn:

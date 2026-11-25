@@ -24,6 +24,13 @@ CREATE INDEX IF NOT EXISTS hl_news_address_names_due ON hl_news_address_names(ma
 SCHEMA_CHECKSUM = sha256(SCHEMA_SQL.encode()).hexdigest()
 
 
+CLEAR_GENERIC_SQL = """
+UPDATE hl_news_address_names SET current_name=NULL WHERE manual_locked=false AND current_name LIKE '普通地址%';
+DELETE FROM hl_news_metadata WHERE key LIKE 'address_note:%' AND payload->>'origin'='auto' AND payload->>'note' LIKE '普通地址%';
+"""
+CLEAR_GENERIC_CHECKSUM = sha256(CLEAR_GENERIC_SQL.encode()).hexdigest()
+
+
 class PostgresNamingStore:
     def __init__(self, news_store) -> None:
         self.store = news_store
@@ -38,8 +45,12 @@ class PostgresNamingStore:
     def initialize_schema() -> None:
         with connect_postgres(schema="hyperliquid_news", application_name="odaily-hyperliquid-naming-migrate") as conn:
             apply_schema_migrations(conn, schema="hyperliquid_news", component="hyperliquid_naming",
-                migrations=(PostgresMigration(1,"hyperliquid_naming_initial",SCHEMA_CHECKSUM,
-                    lambda connection: connection.execute(SCHEMA_SQL)),))
+                migrations=(
+                    PostgresMigration(1,"hyperliquid_naming_initial",SCHEMA_CHECKSUM,
+                        lambda connection: connection.execute(SCHEMA_SQL)),
+                    PostgresMigration(2,"hyperliquid_naming_clear_generic_prefix",CLEAR_GENERIC_CHECKSUM,
+                        lambda connection: connection.execute(CLEAR_GENERIC_SQL)),
+                ))
 
     @staticmethod
     def _now() -> int:
@@ -86,6 +97,22 @@ class PostgresNamingStore:
             rows=conn.execute(f"""SELECT n.* FROM hl_news_address_names n JOIN hl_news_addresses a USING(address)
                 WHERE n.manual_locked=false AND n.status<>'blocked' AND n.inflight_token IS NULL AND n.next_check_ms<=%s AND n.retry_after_ms<=%s
                 AND {blocked}
+                AND NOT EXISTS (
+                    SELECT 1 FROM hl_news_account_pool p WHERE p.address=n.address AND (
+                        p.tier='non_perp' OR (
+                            p.qualified=false
+                            AND EXISTS (
+                                SELECT 1 FROM hl_news_normal_state ns WHERE ns.address=n.address
+                                AND COALESCE((ns.history->>'fills')::bigint,0)=0
+                                AND COALESCE(ns.state->'positions','{{}}'::jsonb)='{{}}'::jsonb
+                            )
+                            AND NOT EXISTS (SELECT 1 FROM hl_news_fills f WHERE f.address=n.address)
+                            AND NOT EXISTS (SELECT 1 FROM hl_news_compact_history ch WHERE ch.address=n.address)
+                            AND NOT EXISTS (SELECT 1 FROM hl_news_candidate_addresses ca WHERE ca.address_lower=n.address)
+                            AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(a.sources) s WHERE s->>'kind' IN ('manual','large_observed_trade'))
+                        )
+                    )
+                )
                 ORDER BY n.next_check_ms,n.address FOR UPDATE OF n SKIP LOCKED LIMIT %s""",(now_ms,now_ms,max(1,min(limit,20)))).fetchall()
             addresses=[row["address"] for row in rows]
             if addresses:
@@ -98,7 +125,7 @@ class PostgresNamingStore:
             return result.rowcount==1
 
     def save_result(self,address: str,*,token: str,result: dict[str,Any],now_ms: int,model: str,error: str|None=None)->bool:
-        from .naming import POSITION_MAX_AGE_MS, REVIEW_MS, fallback_name
+        from .naming import POSITION_MAX_AGE_MS, REVIEW_MS, is_generic_name
         from .client import address_key
         address=address_key(address)
         with self._connect() as conn:
@@ -109,7 +136,8 @@ class PostgresNamingStore:
                 delay=min(REVIEW_MS,3600000)
                 result=conn.execute("UPDATE hl_news_address_names SET inflight_token=NULL,inflight_started_ms=NULL,last_error=%s,retry_after_ms=%s,next_check_ms=%s WHERE address=%s AND inflight_token=%s AND manual_locked=false",(str(error)[:2000],now_ms+delay,now_ms+delay,address,token))
                 return result.rowcount==1
-            name=str(result.get("name") or fallback_name(address)).strip()[:24] or fallback_name(address)
+            raw_name=str(result.get("name") or "").strip()[:24]
+            selected=result.get("selected_dimension")
             kind=result.get("kind") if result.get("kind") in ("stable","position") else "stable"
             coin=str(result.get("coin") or "").strip() or None
             side=result.get("side") if result.get("side") in ("long","short") else None
@@ -130,12 +158,14 @@ class PostgresNamingStore:
                 if not position or "size" not in position or float(position["size"])==0 or ((float(position["size"])>0)!=(side=="long")):
                     conn.execute("UPDATE hl_news_address_names SET inflight_token=NULL,inflight_started_ms=NULL,next_check_ms=%s,retry_after_ms=0,last_error='Position changed while naming' WHERE address=%s AND inflight_token=%s AND manual_locked=false",(now_ms,address,token))
                     return False
-            name=self._unique_name(conn,address,name)
+            if is_generic_name(raw_name, selected_dimension=selected):
+                name=None
+            else:
+                name=self._unique_name(conn,address,raw_name)
             if self.store.blocked(address,conn=conn):
                 return False
             refs=result.get("evidence_refs",[])
             evidence_ids={item.get("evidence_id") for item in result.get("coverage",{}).get("dimensions",[])}
-            selected=result.get("selected_dimension")
             if selected not in evidence_ids or any(ref not in evidence_ids for ref in refs):
                 return False
             if kind=="position":
@@ -149,7 +179,12 @@ class PostgresNamingStore:
             if saved.rowcount==1:
                 manual=self.store._metadata_in_transaction(conn,"address_note:"+address,{})
                 if manual.get("origin")!="manual":
-                    self.store._save_metadata_in_transaction(conn, "address_note:"+address, json.dumps({"address":address,"note":name,"origin":"auto","updated_at":datetime.fromtimestamp(now_ms/1000,UTC).isoformat()}))
+                    if name:
+                        self.store._save_metadata_in_transaction(conn, "address_note:"+address, json.dumps({"address":address,"note":name,"origin":"auto","updated_at":datetime.fromtimestamp(now_ms/1000,UTC).isoformat()}))
+                    else:
+                        conn.execute("DELETE FROM hl_news_metadata WHERE key=%s AND payload->>'origin'='auto'",("address_note:"+address,))
+                        if manual.get("origin")=="auto":
+                            conn.execute("DELETE FROM hl_news_metadata_large WHERE key=%s",("address_note:"+address,))
             return saved.rowcount==1
 
     def set_manual(self,address: str,note: str,*,updated_by: str)->dict[str,Any]:

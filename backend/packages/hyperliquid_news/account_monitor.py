@@ -1,6 +1,7 @@
 """Shared account profit / total-loss cohort; one scheduler and request budget."""
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 from typing import Any
@@ -31,9 +32,16 @@ def qualifying_leaderboard(rows: list[dict[str, Any]], rules: Rules, now_ms: int
     """All returned qualifying rows, without the test seed top-N truncation."""
     for row in rows:
         windows = dict(row.get('windowPerformances', []))
+        all_time = windows.get('allTime')
+        if isinstance(all_time, dict) and all_time.get('vlm') is not None and number(all_time['vlm']) <= 0:
+            continue
         for window in LEADERBOARD_WINDOWS:
             data = windows.get(window)
-            if isinstance(data, dict) and (number(data.get('pnl', '0')) >= rules.account_profit or
+            if not isinstance(data, dict):
+                continue
+            if data.get('vlm') is not None and number(data['vlm']) <= 0:
+                continue
+            if (number(data.get('pnl', '0')) >= rules.account_profit or
                     (include_loss and window == 'allTime' and number(data.get('pnl', '0')) <= -rules.historical_loss)):
                 yield row['ethAddress'], {'kind': 'leaderboard', 'window': window,
                     'side': 'loss' if number(data['pnl']) < 0 else 'profit', 'rank': None, 'pnl': str(number(data['pnl'])),
@@ -55,12 +63,25 @@ def portfolio_performance(payload: Any, now_ms: int) -> dict[str, Any]:
         stamp = int(stamp)
         if stamp > now_ms or now_ms - stamp > DAY:
             continue
-        windows[names[name]] = {'pnl': str(number(pnl)), 'observed_ms': stamp,
+        entry = {'pnl': str(number(pnl)), 'observed_ms': stamp,
             'history_sample_ms': stamp, 'rank': None, 'scope': 'official_portfolio_window_change'}
+        if data.get('vlm') is not None:
+            entry['vlm'] = str(number(data['vlm']))
+        windows[names[name]] = entry
     if not windows:
         raise ValueError('No fresh perpetual portfolio performance')
     return {'source': 'hyperliquid_portfolio', 'fetched_ms': now_ms, 'windows': windows,
             'pnl_scope': 'official_portfolio_including_unrealized'}
+
+
+def is_non_perp_portfolio(performance: dict[str, Any]) -> bool:
+    windows = performance.get('windows') or {}
+    all_time = windows.get('allTime')
+    if not isinstance(all_time, dict) or all_time.get('vlm') is None:
+        return False
+    return number(all_time['vlm']) <= 0 and all(
+        number(w.get('pnl', 0)) == 0 for w in windows.values() if isinstance(w, dict)
+    )
 
 
 def portfolio_all_time_at(payload: Any, cutoff_ms: int) -> dict[str, Any] | None:
@@ -223,10 +244,25 @@ class AccountProfitMonitor:
                     _log('account_monitor.address_stage_completed', address=address, stage=stage,
                          elapsed_ms=int((time.monotonic() - stage_started) * 1000), qualified=is_qualified(performance))
                 if not is_qualified(performance):
-                    self.store.update_account_schedule(address, now_ms=observed, tier='unqualified',
-                                                       interval_ms=DAY, qualified=False)
+                    sources = row.get('sources') or []
+                    if isinstance(sources, str):
+                        sources = json.loads(sources)
+                    is_manual = any(isinstance(s, dict) and s.get('kind') == 'manual' for s in sources)
+                    non_perp = (
+                        not is_manual
+                        and is_non_perp_portfolio(performance)
+                        and (not old or not (old.get('state') or {}).get('positions'))
+                    )
+                    self.store.update_account_schedule(
+                        address,
+                        now_ms=observed,
+                        tier='non_perp' if non_perp else 'unqualified',
+                        interval_ms=7 * DAY if non_perp else DAY,
+                        qualified=False,
+                    )
                     report['processed'] += 1
-                    _log('account_monitor.address_completed', address=address, outcome='unqualified',
+                    _log('account_monitor.address_completed', address=address,
+                         outcome='non_perp' if non_perp else 'unqualified',
                          elapsed_ms=int((time.monotonic() - address_started) * 1000))
                     continue
                 positions = {}

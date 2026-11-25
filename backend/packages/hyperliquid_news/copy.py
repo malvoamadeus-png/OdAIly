@@ -450,9 +450,12 @@ def format_news(draft: DraftBrief, event: dict[str, Any]) -> DraftBrief:
     body = normalize_reader_terms(body)
     # Final deterministic attribution pass covers all Hyperliquid scenarios and
     # runs after scenario-specific title reconstruction and number normalization.
+    from .naming import is_generic_name
     names = event.get('evidence', {}).get('address_names', {})
     first_address = event.get('addresses', [''])[0]
     display_name = names.get(first_address)
+    if display_name and is_generic_name(display_name):
+        display_name = None
     if len(event.get('addresses', [])) == 1:
         labels = set(evidence.get('highlights', []))
         operation = _highlight_action_description(evidence, contract)

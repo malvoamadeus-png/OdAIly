@@ -69,8 +69,18 @@ def detect_high_frequency_quant(
 def leaderboard_candidates(rows: list[dict[str, Any]], per_side: int, now_ms: int):
     """Top/bottom N of each official time window; union by address later."""
     for window in LEADERBOARD_WINDOWS:
-        eligible = [(row, dict(row.get('windowPerformances', [])).get(window)) for row in rows]
-        eligible = [(row, data) for row, data in eligible if isinstance(data, dict) and data.get('pnl') is not None]
+        eligible = []
+        for row in rows:
+            windows = dict(row.get('windowPerformances', []))
+            all_time = windows.get('allTime')
+            if isinstance(all_time, dict) and all_time.get('vlm') is not None and number(all_time['vlm']) <= 0:
+                continue
+            data = windows.get(window)
+            if not isinstance(data, dict) or data.get('pnl') is None:
+                continue
+            if data.get('vlm') is not None and number(data['vlm']) <= 0:
+                continue
+            eligible.append((row, data))
         eligible.sort(key=lambda item: number(item[1]['pnl']), reverse=True)
         positive = [(row, data) for row, data in eligible if number(data['pnl']) > 0][:per_side]
         negative = [(row, data) for row, data in reversed(eligible) if number(data['pnl']) < 0][:per_side]
@@ -106,11 +116,15 @@ def trade_candidates(trades: list[dict[str, Any]], coin: str, rules: Rules, now_
 
 
 def enrichment_reasons(positions: dict[str, Position], sources: list[dict[str, Any]],
-                       markets: dict[str, dict[str, Any]], rules: Rules) -> list[str]:
+                       markets: dict[str, dict[str, Any]], rules: Rules,
+                       *, account_qualified: bool | None = None) -> list[str]:
     reasons = set()
     for source in sources:
-        if source['kind'] in ('leaderboard', 'large_observed_trade', 'manual', 'asset_leaderboard'):
-            reasons.add(source['kind'])
+        kind = source.get('kind')
+        if kind in ('leaderboard', 'asset_leaderboard') and account_qualified is False:
+            continue
+        if kind in ('leaderboard', 'large_observed_trade', 'manual', 'asset_leaderboard'):
+            reasons.add(kind)
     for coin, p in positions.items():
         if p.notional >= min(rules.action, rules.win_rate_action):
             reasons.add('important_position')

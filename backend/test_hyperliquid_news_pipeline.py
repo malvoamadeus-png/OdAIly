@@ -743,3 +743,50 @@ def test_blocked_address_cannot_rediscover_monitor_dispatch_or_publish(tmp_path,
     assert store.discover(A,source={'kind':'leaderboard'},now_ms=stamp)
     store.schedule_account(A,now_ms=stamp)
     assert store.account_due(stamp,10)[0]['address']==A
+
+
+def test_dashboard_address_library_filters_non_perp_and_counts_by_category(tmp_path):
+    path = tmp_path / 'filter-addresses.sqlite'
+    SQLiteXProcessingRepository(path).init_schema()
+    store = NewsStore(path); store.initialize()
+    active_addr = A
+    filtered_addr = '0x' + '2' * 40
+    blocked_addr = '0x' + '3' * 40
+    pending_addr = '0x' + '4' * 40
+
+    store.discover(active_addr, source={'kind': 'leaderboard'}, now_ms=1000)
+    store.schedule_account(active_addr, now_ms=1000, leaderboard_qualified=True)
+    store.commit_observation(
+        address=active_addr, now_ms=1500,
+        state={'observed_ms': 1500, 'positions': {'BTC': {'size': '10', 'notional': '600000', 'unrealized_pnl': '0'}}},
+        history={'fills': 2}, coverage={'pagination_complete': True}, fills=[], candidates=[],
+        state_table='hl_news_normal_state',
+    )
+
+    store.discover(filtered_addr, source={'kind': 'leaderboard'}, now_ms=1000)
+    store.schedule_account(filtered_addr, now_ms=1000)
+    store.update_account_schedule(filtered_addr, now_ms=1500, tier='non_perp', interval_ms=7 * 86_400_000, qualified=False)
+    store.commit_observation(
+        address=filtered_addr, now_ms=1500,
+        state={'observed_ms': 1500, 'positions': {}},
+        history={'fills': 0}, coverage={'pagination_complete': True}, fills=[], candidates=[],
+        state_table='hl_news_normal_state',
+    )
+
+    store.discover(blocked_addr, source={'kind': 'leaderboard'}, now_ms=1000)
+    store.save_address_block(blocked_addr, True, updated_by='tester')
+    store.discover(pending_addr, source={'kind': 'leaderboard'}, now_ms=1000)
+
+    default_dash = dashboard(store, view='addresses')
+    assert default_dash['counts']['addresses'] == 2
+    assert default_dash['counts']['addresses_filtered'] == 1
+    assert default_dash['counts']['addresses_blocked'] == 1
+    assert [row['address'] for row in default_dash['addresses']] == [active_addr, pending_addr]
+    assert default_dash['addresses'][0]['perp_badge'] == '持仓中 1'
+
+    filtered_dash = dashboard(store, view='addresses', address_status='filtered')
+    assert [row['address'] for row in filtered_dash['addresses']] == [filtered_addr]
+    assert filtered_dash['addresses'][0]['address_category'] == 'filtered'
+
+    blocked_dash = dashboard(store, view='addresses', address_status='blocked')
+    assert [row['address'] for row in blocked_dash['addresses']] == [blocked_addr]

@@ -351,3 +351,53 @@ def test_enable_loss_is_idempotent_and_preserves_profit_cutoff(tmp_path, monkeyp
     assert store.metadata('production_account_profit', {}) == first
     assert first['started_ms'] == T
     assert first['enabled_scenarios'] == ['account_profit', 'historical_loss']
+
+
+def test_leaderboard_and_monitor_filter_zero_volume_non_perp_addresses(tmp_path):
+    from packages.hyperliquid_news.discovery import leaderboard_candidates
+    from packages.hyperliquid_news.service import NewsMonitor
+
+    spot_only = '0x' + '9' * 40
+    rows = [
+        {
+            'ethAddress': spot_only,
+            'windowPerformances': [
+                ['day', {'pnl': '22000000', 'vlm': '0.0'}],
+                ['allTime', {'pnl': '580000000', 'vlm': '0.0'}],
+            ],
+        },
+        {
+            'ethAddress': A,
+            'windowPerformances': [
+                ['allTime', {'pnl': '25000000', 'vlm': '100000000'}],
+            ],
+        },
+    ]
+    assert [addr for addr, _ in qualifying_leaderboard(rows, Rules(), T)] == [A]
+    assert [addr for addr, _ in leaderboard_candidates(rows, 5, T)] == [A]
+
+    store = NewsStore(tmp_path / 'non_perp.sqlite')
+    store.initialize()
+    store.save_global('production_account_profit', {'enabled': True, 'started_ms': T, 'enabled_scenarios': ['account_profit']}, [])
+    store.discover(spot_only, source={'kind': 'leaderboard'}, now_ms=T, limit=None)
+    store.schedule_account(spot_only, now_ms=T)
+
+    class ZeroPerpClient(Client):
+        size = '0'
+        pnl = '0.0'
+        def leaderboard(self): return []
+        def portfolio(self, address):
+            self.portfolio_calls += 1
+            return [
+                ['allTime', {'pnlHistory': [[T, '580000000']], 'vlm': '0.0'}],
+                ['perpAllTime', {'pnlHistory': [[T, '0.0']], 'vlm': '0.0'}],
+            ]
+
+    client = ZeroPerpClient()
+    AccountProfitMonitor(store, client).run_once(now_ms=T)
+    assert store.account_pool_map()[spot_only] == {'tier': 'non_perp', 'qualified': False}
+    NewsMonitor(store=store, client=client, leaderboard_seeds=0, markets_per_discovery=1).run_once(now_ms=T + 1000)
+    # First normal poll checks positions once without querying userFillsByTime (account_qualified=False),
+    # then subsequent normal polls skip confirmed non_perp addresses.
+    assert client.history_calls == 0
+    assert store.addresses(10, normal_schedule=True) == []

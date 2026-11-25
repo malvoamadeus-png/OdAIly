@@ -249,6 +249,13 @@ class NewsStore:
                     LEFT JOIN hl_news_normal_schedule s ON s.address=a.address
                     WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b
                         WHERE b.key='address_block:' || a.address AND json_extract(b.payload,'$.blocked')=1)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM hl_news_account_pool p
+                        JOIN hl_news_normal_state ns ON ns.address=p.address
+                        WHERE p.address=a.address AND p.tier='non_perp'
+                        AND COALESCE(json_extract(ns.state,'$.positions'),'{}')='{}'
+                        AND COALESCE(a.sources,'') NOT LIKE '%"manual"%'
+                    )
                     ORDER BY COALESCE(s.last_polled_ms,0),a.address LIMIT ?''', (limit,))]
             return [dict(r) for r in conn.execute(f'SELECT * FROM hl_news_addresses WHERE {BLOCK_FILTER} ORDER BY last_polled_ms,address LIMIT ?', (limit,))]
 
@@ -502,7 +509,7 @@ class NewsStore:
                         reason='position_changed_or_closed',next_check_ms=?,retry_after_ms=0,inflight_token=NULL,inflight_started_ms=NULL
                         WHERE address=? AND manual_locked=0 AND kind='position'""", (now_ms, address))
                     conn.execute("DELETE FROM hl_news_metadata WHERE key=? AND json_extract(payload,'$.origin')='auto'", ('address_note:'+address,))
-            if name and not name['manual_locked'] and not old and str(name['current_name'] or '').startswith('普通地址'):
+            if name and not name['manual_locked'] and not old and (name['current_name'] is None or str(name['current_name']).startswith('普通地址')):
                 conn.execute('UPDATE hl_news_address_names SET next_check_ms=?,retry_after_ms=0 WHERE address=?', (now_ms,address))
             conn.execute('UPDATE hl_news_addresses SET last_polled_ms=?,error=NULL WHERE address=?', (now_ms, address))
             if state_table == 'hl_news_normal_state':
@@ -556,15 +563,27 @@ class NewsStore:
         # Reserve one probe for new/inactive candidates; qualified addresses get
         # the remaining budget. Ordered due times prevent hot addresses starving cold ones.
         with connect_sqlite(self.path) as conn:
-            probe = conn.execute(f"""SELECT * FROM hl_news_account_pool
-                WHERE {BLOCK_FILTER} AND qualified=0 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT 1""", (now_ms,)).fetchall()
-            active = conn.execute(f"""SELECT * FROM hl_news_account_pool
-                WHERE {BLOCK_FILTER} AND qualified=1 AND next_poll_ms<=? ORDER BY next_poll_ms,address LIMIT ?""",
+            probe = conn.execute(f"""SELECT p.*, a.sources FROM hl_news_account_pool p
+                JOIN hl_news_addresses a ON a.address=p.address
+                WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || p.address AND json_extract(b.payload,'$.blocked')=1)
+                AND p.qualified=0 AND p.next_poll_ms<=? ORDER BY p.next_poll_ms,p.address LIMIT 1""", (now_ms,)).fetchall()
+            active = conn.execute(f"""SELECT p.*, a.sources FROM hl_news_account_pool p
+                JOIN hl_news_addresses a ON a.address=p.address
+                WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || p.address AND json_extract(b.payload,'$.blocked')=1)
+                AND p.qualified=1 AND p.next_poll_ms<=? ORDER BY p.next_poll_ms,p.address LIMIT ?""",
                 (now_ms, limit-len(probe))).fetchall()
             remaining = limit-len(probe)-len(active)
-            extra = conn.execute(f"""SELECT * FROM hl_news_account_pool WHERE {BLOCK_FILTER} AND qualified=0 AND next_poll_ms<=?
-                ORDER BY next_poll_ms,address LIMIT ? OFFSET ?""", (now_ms, remaining, len(probe))).fetchall()
+            extra = conn.execute(f"""SELECT p.*, a.sources FROM hl_news_account_pool p
+                JOIN hl_news_addresses a ON a.address=p.address
+                WHERE NOT EXISTS (SELECT 1 FROM hl_news_metadata b WHERE b.key='address_block:' || p.address AND json_extract(b.payload,'$.blocked')=1)
+                AND p.qualified=0 AND p.next_poll_ms<=?
+                ORDER BY p.next_poll_ms,p.address LIMIT ? OFFSET ?""", (now_ms, remaining, len(probe))).fetchall()
         return [dict(r) for r in [*active, *probe, *extra]]
+
+    def account_pool_map(self) -> dict[str, dict[str, Any]]:
+        with connect_sqlite(self.path) as conn:
+            rows = conn.execute('SELECT address,tier,qualified FROM hl_news_account_pool').fetchall()
+        return {row['address']: {'tier': row['tier'], 'qualified': bool(row['qualified'])} for row in rows}
 
     def update_account_schedule(self, address: str, *, now_ms: int, tier: str,
                                 interval_ms: int, qualified: bool, last_action_ms: int = 0) -> None:

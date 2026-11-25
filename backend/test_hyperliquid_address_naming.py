@@ -42,8 +42,11 @@ def test_due_worker_reviews_future_addresses_and_uses_safe_prefix_without_state(
     store, names = setup(tmp_path)
     report = NamingWorker(store, names, batch_size=4).run_once(now_ms=T)
     assert report["saved"] == 2
-    assert names.get(A)["current_name"] == "普通地址0x12"
-    assert names.get(B)["current_name"] == "普通地址0xab"
+    assert names.get(A)["current_name"] is None
+    assert names.get(A)["display_name"] == "0x12地址"
+    assert names.get(B)["current_name"] is None
+    assert names.get(B)["display_name"] == "0xab地址"
+    assert store.metadata("address_note:" + A, {}) == {}
     assert names.claim_due(now_ms=T + REVIEW_MS - 1, limit=10) == []
     assert len(names.claim_due(now_ms=T + REVIEW_MS, limit=10)) == 2
 
@@ -236,8 +239,8 @@ def test_duplicate_feature_and_prefix_extend_actual_address_suffix(tmp_path):
     other = A[:4]+'f'+A[5:]
     store.discover(other, source={'kind':'test'}, now_ms=T, limit=None)
     names.initialize()
-    result = {'name':'普通地址0x12', 'kind':'stable', 'selected_dimension':'address_prefix', 'evidence_refs':['address_prefix'],
-        'coverage':{'dimensions':[{'evidence_id':'address_prefix','available':True}]}}
+    result = {'name':'BTC爆赚交易员0x12', 'kind':'stable', 'selected_dimension':'asset_profit', 'evidence_refs':['asset_profit'],
+        'coverage':{'dimensions':[{'evidence_id':'asset_profit','available':True}]}}
     claims={r['address']:r for r in names.claim_due(now_ms=T,limit=10)}
     for address in (A,other):
         assert names.save_result(address,token=claims[address]['claim_token'],result=result,now_ms=T,model='gpt-6-luna')
@@ -253,13 +256,13 @@ def test_invalid_model_reply_is_repaired_once_with_same_model(tmp_path):
         def generate_text(self, **kwargs):
             self.calls+=1
             assert kwargs['model']=='gpt-6-luna'
-            value={'name':'普通地址','kind':'stable','coin':None,'side':None,'reason':'缺少特长','evidence_refs':['address_prefix']}
+            value={'name':'暂无特征','kind':'stable','coin':None,'side':None,'reason':'缺少特长','evidence_refs':['address_prefix']}
             if self.calls==2: value['selected_dimension']='address_prefix'
             return json.dumps(value)
     client=Client()
     profile=build_profile(store,A,now_ms=T)
     result=NamingWorker(store,names,ai_client=client)._choose(profile,A)
-    assert result['name']=='普通地址0x12'
+    assert result['name'] is None
     assert client.calls==2
 
 
@@ -369,7 +372,7 @@ def test_total_loss_over_10m_names_top_dumb_money_directly_and_formats_liquidati
             assert "顶级笨蛋钱" in prompt
             return json.dumps(
                 {
-                    "name": "普通地址",
+                    "name": "暂无特征",
                     "kind": "stable",
                     "coin": None,
                     "side": None,
@@ -389,7 +392,8 @@ def test_total_loss_over_10m_names_top_dumb_money_directly_and_formats_liquidati
     assert row_a["kind"] == "stable"
     assert row_a["evidence"]["selected_dimension"] == "account_performance"
     assert row_a["model"] == "rule:account_loss_10m"
-    assert names.get(B)["current_name"] == "普通地址0xab"
+    assert names.get(B)["current_name"] is None
+    assert names.get(B)["display_name"] == "0xab地址"
     assert names.get(C)["current_name"] == "自定义锁定名称"
 
     event = store.with_address_notes(
@@ -425,3 +429,63 @@ def test_discover_and_manual_add_immediately_insert_into_naming_table(tmp_path):
     names = NamingStore(store.path)
     assert names.get(A) is not None and names.get(A)["checked_ms"] == 0
     assert names.get(B) is not None and names.get(B)["checked_ms"] == 0
+
+
+def test_generic_or_pending_names_never_leak_into_news_copy(tmp_path):
+    store, names = setup(tmp_path)
+    names.initialize()
+    with connect_sqlite(store.path) as conn:
+        # Simulate a legacy row still holding 普通地址0x12, while B is pending (current_name=NULL).
+        conn.execute(
+            "UPDATE hl_news_address_names SET current_name='普通地址0x12',status='active',checked_ms=? WHERE address=?",
+            (T, A),
+        )
+    for addr in (A, B):
+        event = store.with_address_notes(
+            {
+                "addresses": [addr],
+                "coin": "BTC",
+                "kinds": ["highlighted_address_action"],
+                "observed_ms": T + 1000,
+                "evidence": {
+                    "highlights": ["official_account_high_profit"],
+                    "previous_position": {"size": "0", "mark": "60000", "notional": "0"},
+                    "position": {"size": "100", "mark": "60000", "notional": "6000000"},
+                    "actions": {"open_long_notional": "6000000"},
+                    "history": {},
+                },
+            }
+        )
+        assert addr not in event["evidence"]["address_names"]
+        final = format_news(
+            DraftBrief(title="某地址开仓600万美元BTC多单", content="某地址开仓600万美元BTC多单。"),
+            event,
+        )
+        assert "普通地址" not in final.title and "普通地址" not in final.content
+        assert final.title.startswith("某地址")
+        assert "据Odaily监测，某地址" in final.content
+
+    # Even if a caller injects 普通地址0x12 directly into address_names, format_news rejects it.
+    poisoned = {
+        "addresses": [A],
+        "coin": "BTC",
+        "kinds": ["large_position_action"],
+        "observed_ms": T + 1000,
+        "evidence": {
+            "previous_position": {"size": "0", "mark": "60000", "notional": "0"},
+            "position": {"size": "100", "mark": "60000", "notional": "6000000"},
+            "actions": {"open_long_notional": "6000000"},
+            "address_names": {A: "普通地址0x12"},
+        },
+    }
+    cleaned = format_news(DraftBrief(title="某地址开仓BTC多单", content="某地址开仓600万美元BTC多单。"), poisoned)
+    assert "普通地址" not in cleaned.title and "普通地址" not in cleaned.content
+    assert cleaned.title.startswith("某地址")
+
+    # NamingStore.initialize also scrubs legacy auto 普通地址% rows and claim_due skips non_perp addresses.
+    store.schedule_account(B, now_ms=T)
+    store.update_account_schedule(B, now_ms=T, tier="non_perp", interval_ms=7 * 86_400_000, qualified=False)
+    names.initialize()
+    assert names.get(A)["current_name"] is None
+    claimed = [row["address"] for row in names.claim_due(now_ms=T, limit=10)]
+    assert B not in claimed

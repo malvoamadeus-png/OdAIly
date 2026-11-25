@@ -23,9 +23,63 @@ KIND_LABELS = {
 }
 
 
+def _shape_address_row(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    note_raw = item.pop('note_payload', None)
+    block_raw = item.pop('block_payload', None)
+    note_obj = note_raw if isinstance(note_raw, dict) else json.loads(note_raw or '{}')
+    block_obj = block_raw if isinstance(block_raw, dict) else json.loads(block_raw or '{}')
+    manual_locked = bool(item.get('name_manual_locked'))
+    raw_name = str(item.get('current_name') or '').strip()
+    if not manual_locked and raw_name.startswith('普通地址'):
+        raw_name = ''
+    note_text = str(note_obj.get('note') or '')
+    if not manual_locked and note_obj.get('origin') == 'auto' and note_text.startswith('普通地址'):
+        note_text = ''
+    blocked = bool(block_obj.get('blocked'))
+    position_count = int(item.get('position_count') or 0)
+    has_fills = bool(item.get('has_fills'))
+    acct_qualified = bool(item.get('acct_qualified'))
+    acct_tier = str(item.get('acct_tier') or '')
+    is_manual = bool(item.get('is_manual'))
+    has_candidates = bool(item.get('has_candidates'))
+    is_checked = bool(item.get('is_checked'))
+    if blocked:
+        category = 'blocked'
+        perp_badge = '已拉黑'
+    elif is_checked and not is_manual and not (acct_qualified and acct_tier != 'non_perp') and not has_fills and position_count == 0 and not has_candidates:
+        category = 'filtered'
+        perp_badge = '非合约/无交易'
+    else:
+        category = 'active'
+        if position_count > 0:
+            perp_badge = f'持仓中 {position_count}'
+        elif acct_qualified:
+            perp_badge = '合约大户'
+        elif has_fills:
+            perp_badge = '近期有成交'
+        elif is_manual:
+            perp_badge = '人工关注'
+        else:
+            perp_badge = '待首检'
+    item['current_name'] = raw_name or None
+    item['note'] = note_text
+    item['blocked'] = blocked
+    item['name_manual_locked'] = manual_locked
+    item['position_count'] = position_count
+    item['has_fills'] = has_fills
+    item['acct_qualified'] = acct_qualified
+    item['address_category'] = category
+    item['perp_badge'] = perp_badge
+    item['display_name'] = note_text if manual_locked else (raw_name or f"{item['address'][:4].lower()}地址")
+    for internal in ('acct_tier', 'is_manual', 'has_candidates', 'is_checked'):
+        item.pop(internal, None)
+    return item
+
+
 def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, page: int = 0,
               page_size: int | None = None, scenario: str | None = None, dataset: str = 'live',
-              view: str = 'scenarios', address_query: str = '', address_status: str = 'all') -> dict[str, Any]:
+              view: str = 'scenarios', address_query: str = '', address_status: str = 'active') -> dict[str, Any]:
     if page < 0:
         raise ValueError('Invalid page')
     if dataset not in ('live', 'test'):
@@ -37,7 +91,7 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
     page_size = page_size if page_size is not None else (10 if view == 'timeline' else 15)
     if not 1 <= page_size <= 100:
         raise ValueError('Invalid page size')
-    if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'blocked'):
+    if not isinstance(address_query, str) or len(address_query) > 100 or address_status not in ('all', 'active', 'filtered', 'blocked'):
         raise ValueError('Invalid address search')
     if scenario:
         scenario_condition(scenario, dataset=dataset)
@@ -158,27 +212,66 @@ def dashboard(store: NewsStore, *, pipeline_database_path: Path | None = None, p
         name_columns = ("n.current_name,n.kind AS name_kind,n.coin AS name_coin,n.side AS name_side,n.status AS name_status,"
                         "n.manual_locked AS name_manual_locked,n.checked_ms AS name_checked_ms,n.next_check_ms AS name_next_check_ms") if name_table else "NULL AS current_name,NULL AS name_kind,NULL AS name_coin,NULL AS name_side,NULL AS name_status,0 AS name_manual_locked,0 AS name_checked_ms,0 AS name_next_check_ms"
         name_join = 'LEFT JOIN hl_news_address_names n ON n.address=a.address' if name_table else ''
-        for row in conn.execute(f'''SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
-            m.payload AS note_payload,b.payload AS block_payload,{name_columns}
-            FROM hl_news_addresses a
-            LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
-            LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
-            {name_join}
-            WHERE {address_clause}
-            AND (?='all' OR (?='blocked' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=1)
-                 OR (?='active' AND COALESCE(json_extract(b.payload,'$.blocked'),0)=0))
-            ORDER BY (lower(a.address)=lower(?)) DESC,a.last_polled_ms DESC LIMIT ?''', (*address_params, address_status, address_status, address_status, address_query.strip(), 100 if view == 'addresses' else 1 if view == 'timeline' and address_query.strip() else 0)):
-
-            item = dict(row)
-            item['note'] = json.loads(item.pop('note_payload') or '{}').get('note', '')
-            item['blocked'] = bool(json.loads(item.pop('block_payload') or '{}').get('blocked'))
-            item['display_name'] = item.get('note') if item.get('name_manual_locked') else (item.get('current_name') or f"{item['address'][:4].lower()}地址")
-            item['name_manual_locked'] = bool(item.get('name_manual_locked'))
-            addresses.append(item)
+        blocked_expr = "COALESCE(json_extract(b.payload,'$.blocked'),0)=1"
+        has_fills_expr = "(EXISTS (SELECT 1 FROM hl_news_fills f WHERE f.address=a.address) OR EXISTS (SELECT 1 FROM hl_news_compact_history ch WHERE ch.address=a.address) OR COALESCE(json_extract(ns.history,'$.fills'),0)>0)"
+        pos_count_expr = "COALESCE((SELECT count(*) FROM json_each(COALESCE(NULLIF(json_extract(ns.state,'$.positions'),'{}'), json_extract(s.state,'$.positions'), '{}'))), 0)"
+        has_cands_expr = "EXISTS (SELECT 1 FROM hl_news_candidate_addresses ca WHERE ca.address_lower=a.address)"
+        is_manual_expr = "(COALESCE(a.sources,'') LIKE '%\"manual\"%' OR COALESCE(a.sources,'') LIKE '%\"large_observed_trade\"%')"
+        is_qualified_expr = "(COALESCE(ap.qualified,0)=1 AND COALESCE(ap.tier,'')!='non_perp')"
+        is_checked_expr = "(COALESCE(ap.tier,'')='non_perp' OR (ns.address IS NOT NULL AND ap.address IS NOT NULL AND ap.qualified=0))"
+        filtered_expr = f"(NOT ({blocked_expr}) AND {is_checked_expr} AND NOT ({is_manual_expr}) AND NOT ({is_qualified_expr}) AND NOT ({has_fills_expr}) AND ({pos_count_expr})=0 AND NOT ({has_cands_expr}))"
+        active_expr = f"(NOT ({blocked_expr}) AND NOT ({filtered_expr}))"
+        status_expr = (
+            "1=1" if address_status == 'all' else
+            blocked_expr if address_status == 'blocked' else
+            filtered_expr if address_status == 'filtered' else
+            active_expr
+        )
+        limit_val = 100 if view == 'addresses' else 1 if view == 'timeline' and address_query.strip() else 0
+        if limit_val:
+            for row in conn.execute(f'''SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
+                m.payload AS note_payload,b.payload AS block_payload,{name_columns},
+                {pos_count_expr} AS position_count,
+                CASE WHEN {has_fills_expr} THEN 1 ELSE 0 END AS has_fills,
+                CASE WHEN {is_qualified_expr} THEN 1 ELSE 0 END AS acct_qualified,
+                COALESCE(ap.tier,'') AS acct_tier,
+                CASE WHEN {is_manual_expr} THEN 1 ELSE 0 END AS is_manual,
+                CASE WHEN {has_cands_expr} THEN 1 ELSE 0 END AS has_candidates,
+                CASE WHEN {is_checked_expr} THEN 1 ELSE 0 END AS is_checked
+                FROM hl_news_addresses a
+                LEFT JOIN hl_news_metadata m ON m.key='address_note:' || a.address
+                LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
+                LEFT JOIN hl_news_normal_state ns ON ns.address=a.address
+                LEFT JOIN hl_news_state s ON s.address=a.address
+                LEFT JOIN hl_news_account_pool ap ON ap.address=a.address
+                {name_join}
+                WHERE {address_clause} AND ({status_expr})
+                ORDER BY (lower(a.address)=lower(?)) DESC,
+                         ({pos_count_expr}>0) DESC,
+                         ({is_qualified_expr}) DESC,
+                         ({has_fills_expr}) DESC,
+                         a.last_polled_ms DESC,a.address LIMIT ?''',
+                (*address_params, address_query.strip(), limit_val)):
+                addresses.append(_shape_address_row(dict(row)))
         counts: dict[str, int] = {}
         if not timeline:
-            counts = {name: conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
-                      for name, table in [('addresses', 'hl_news_addresses'), ('events', 'hl_news_candidates')]}
+            addr_counts = conn.execute(f'''SELECT
+                SUM(CASE WHEN {active_expr} THEN 1 ELSE 0 END) AS active_n,
+                SUM(CASE WHEN {filtered_expr} THEN 1 ELSE 0 END) AS filtered_n,
+                SUM(CASE WHEN {blocked_expr} THEN 1 ELSE 0 END) AS blocked_n,
+                count(*) AS total_n
+                FROM hl_news_addresses a
+                LEFT JOIN hl_news_metadata b ON b.key='address_block:' || a.address
+                LEFT JOIN hl_news_normal_state ns ON ns.address=a.address
+                LEFT JOIN hl_news_state s ON s.address=a.address
+                LEFT JOIN hl_news_account_pool ap ON ap.address=a.address''').fetchone()
+            counts = {
+                'addresses': int(addr_counts['active_n'] or 0),
+                'addresses_filtered': int(addr_counts['filtered_n'] or 0),
+                'addresses_blocked': int(addr_counts['blocked_n'] or 0),
+                'addresses_total': int(addr_counts['total_n'] or 0),
+                'events': conn.execute('SELECT count(*) FROM hl_news_candidates').fetchone()[0],
+            }
             counts['test_cases'] = conn.execute('SELECT count(*) FROM hl_news_test_cases').fetchone()[0] if 'hl_news_test_cases' in tables else 0
             if dispatch:
                 counts['submitted'] = conn.execute("SELECT count(*) FROM hl_news_dispatch WHERE task_id IS NOT NULL AND status!='duplicate'").fetchone()[0]
@@ -195,6 +288,50 @@ def address_naming_details(store: NewsStore, address: str) -> dict[str, Any]:
     return naming_details(store, address)
 
 
+def _postgres_address_sql():
+    blocked_expr = "COALESCE(b.payload->>'blocked','false')='true'"
+    has_fills_expr = "(EXISTS (SELECT 1 FROM hl_news_fills f WHERE f.address=a.address) OR EXISTS (SELECT 1 FROM hl_news_compact_history ch WHERE ch.address=a.address) OR COALESCE((ns.history->>'fills')::bigint,0)>0)"
+    pos_count_expr = "COALESCE((SELECT count(*) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(ns.state->'positions')='object' AND ns.state->'positions'<>'{}'::jsonb THEN ns.state->'positions' WHEN jsonb_typeof(s.state->'positions')='object' THEN s.state->'positions' ELSE '{}'::jsonb END)), 0)"
+    has_cands_expr = "EXISTS (SELECT 1 FROM hl_news_candidate_addresses ca WHERE ca.address_lower=a.address)"
+    is_manual_expr = "EXISTS (SELECT 1 FROM jsonb_array_elements(a.sources) src WHERE src->>'kind' IN ('manual','large_observed_trade'))"
+    is_qualified_expr = "(COALESCE(ap.qualified,false)=true AND COALESCE(ap.tier,'')<>'non_perp')"
+    is_checked_expr = "(COALESCE(ap.tier,'')='non_perp' OR (ns.address IS NOT NULL AND ap.address IS NOT NULL AND ap.qualified=false))"
+    filtered_expr = f"(NOT ({blocked_expr}) AND {is_checked_expr} AND NOT ({is_manual_expr}) AND NOT ({is_qualified_expr}) AND NOT ({has_fills_expr}) AND ({pos_count_expr})=0 AND NOT ({has_cands_expr}))"
+    active_expr = f"(NOT ({blocked_expr}) AND NOT ({filtered_expr}))"
+    return {
+        'blocked': blocked_expr,
+        'has_fills': has_fills_expr,
+        'pos_count': pos_count_expr,
+        'has_cands': has_cands_expr,
+        'is_manual': is_manual_expr,
+        'is_qualified': is_qualified_expr,
+        'is_checked': is_checked_expr,
+        'filtered': filtered_expr,
+        'active': active_expr,
+    }
+
+
+def _postgres_address_counts(conn, exprs: dict[str, str]) -> dict[str, int]:
+    row = conn.execute(
+        f"""SELECT count(*) AS n,
+            count(*) FILTER (WHERE {exprs['active']}) AS active_n,
+            count(*) FILTER (WHERE {exprs['filtered']}) AS filtered_n,
+            count(*) FILTER (WHERE {exprs['blocked']}) AS blocked_n
+            FROM hl_news_addresses a
+            LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address
+            LEFT JOIN hl_news_normal_state ns USING(address)
+            LEFT JOIN hl_news_state s USING(address)
+            LEFT JOIN hl_news_account_pool ap USING(address)"""
+    ).fetchone() or {"n": 0}
+    total_n = int(row["n"])
+    return {
+        "addresses": int(row["active_n"]) if "active_n" in row else total_n,
+        "addresses_filtered": int(row.get("filtered_n", 0)),
+        "addresses_blocked": int(row.get("blocked_n", 0)),
+        "addresses_total": total_n,
+    }
+
+
 def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | None,
                         dataset: str, view: str, address_query: str, address_status: str) -> dict[str, Any]:
     """Bounded PostgreSQL dashboard read path; no SQLite SQL or ATTACH fallback."""
@@ -206,31 +343,39 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
             return {"initialized": False, "events": [], "addresses": [], "rules": asdict(Rules()), "labels": KIND_LABELS,
                     "last_pass": {}, "has_next": False, "page": page, "counts": {}, "scenarios": scenario_cards(dataset=dataset),
                     "scenario": scenario, "dataset": dataset, "view": view}
+        exprs = _postgres_address_sql()
+        status_expr = (
+            "true" if address_status == "all" else
+            exprs["blocked"] if address_status == "blocked" else
+            exprs["filtered"] if address_status == "filtered" else
+            exprs["active"]
+        )
         if view == "addresses":
             address_like = f"%{address_query.strip().lower()}%" if address_query.strip() else "%"
-            address_rows = conn.execute("""SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
+            address_rows = conn.execute(f"""SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
                 m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,
-                n.manual_locked AS name_manual_locked,n.coin AS name_coin,n.side AS name_side,n.checked_ms AS name_checked_ms,n.next_check_ms AS name_next_check_ms
+                n.manual_locked AS name_manual_locked,n.coin AS name_coin,n.side AS name_side,n.checked_ms AS name_checked_ms,n.next_check_ms AS name_next_check_ms,
+                {exprs['pos_count']} AS position_count,
+                {exprs['has_fills']} AS has_fills,
+                {exprs['is_qualified']} AS acct_qualified,
+                COALESCE(ap.tier,'') AS acct_tier,
+                {exprs['is_manual']} AS is_manual,
+                {exprs['has_cands']} AS has_candidates,
+                {exprs['is_checked']} AS is_checked
                 FROM hl_news_addresses a LEFT JOIN hl_news_metadata m ON m.key='address_note:'||a.address
                 LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address LEFT JOIN hl_news_address_names n USING(address)
-                WHERE a.address ILIKE %s AND (%s='all' OR (%s='blocked' AND COALESCE(b.payload->>'blocked','false')='true')
-                    OR (%s='active' AND COALESCE(b.payload->>'blocked','false')<>'true'))
-                ORDER BY (lower(a.address)=lower(%s)) DESC,a.last_polled_ms DESC,a.address LIMIT 100""",
-                (address_like,address_status,address_status,address_status,address_query.strip())).fetchall()
-            addresses = []
-            for row in address_rows:
-                item = dict(row)
-                note = item.pop("note_payload") or {}
-                block = item.pop("block_payload") or {}
-                if isinstance(note,str): note=json.loads(note)
-                if isinstance(block,str): block=json.loads(block)
-                item["note"] = note.get("note","")
-                item["blocked"] = bool(block.get("blocked"))
-                item["name_manual_locked"] = bool(item.get("name_manual_locked"))
-                item["display_name"] = item["note"] if item["name_manual_locked"] else (item.get("current_name") or f"{item['address'][:4].lower()}地址")
-                addresses.append(item)
+                LEFT JOIN hl_news_normal_state ns USING(address) LEFT JOIN hl_news_state s USING(address)
+                LEFT JOIN hl_news_account_pool ap USING(address)
+                WHERE (a.address ILIKE %s OR COALESCE(m.payload->>'note','') ILIKE %s) AND ({status_expr})
+                ORDER BY (lower(a.address)=lower(%s)) DESC,
+                         ({exprs['pos_count']}>0) DESC,
+                         ({exprs['is_qualified']}) DESC,
+                         ({exprs['has_fills']}) DESC,
+                         a.last_polled_ms DESC,a.address LIMIT 100""",
+                (address_like,address_like,address_query.strip())).fetchall()
+            addresses = [_shape_address_row(dict(row)) for row in address_rows]
             return {"initialized": True,"events": [],"addresses": addresses,"rules": asdict(Rules()),"labels": KIND_LABELS,
-                "last_pass": {},"has_next": False,"page": page,"counts": {"addresses": int(conn.execute("SELECT count(*) AS n FROM hl_news_addresses").fetchone()["n"])},
+                "last_pass": {},"has_next": False,"page": page,"counts": _postgres_address_counts(conn, exprs),
                 "scenarios": scenario_cards(dataset=dataset),"scenario": scenario,"dataset": dataset,"view": view,
                 "publication_mode": "backend_only","account_pool": store.account_pool_stats(int(time.time()*1000))}
         if view == "rules":
@@ -298,21 +443,23 @@ def _postgres_dashboard(store, *, page: int, page_size: int, scenario: str | Non
             payload["source_url"] = "https://hyperbot.network/trader/" + payload.get("addresses", [""])[0]
             events.append(payload)
         addresses = []
-        address_limit = 100 if view == "addresses" else 1 if view == "timeline" and address_query.strip() else 0
-        address_rows = conn.execute("""SELECT a.*,m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,n.manual_locked AS name_manual_locked
+        address_limit = 1 if view == "timeline" and address_query.strip() else 0
+        address_rows = conn.execute(f"""SELECT a.address,a.first_seen_ms,a.last_seen_ms,a.last_polled_ms,a.error,
+            m.payload AS note_payload,b.payload AS block_payload,n.current_name,n.kind AS name_kind,n.status AS name_status,n.manual_locked AS name_manual_locked,
+            {exprs['pos_count']} AS position_count,{exprs['has_fills']} AS has_fills,{exprs['is_qualified']} AS acct_qualified,
+            COALESCE(ap.tier,'') AS acct_tier,{exprs['is_manual']} AS is_manual,{exprs['has_cands']} AS has_candidates,{exprs['is_checked']} AS is_checked
             FROM hl_news_addresses a LEFT JOIN hl_news_metadata m ON m.key='address_note:'||a.address
             LEFT JOIN hl_news_metadata b ON b.key='address_block:'||a.address LEFT JOIN hl_news_address_names n USING(address)
-            WHERE a.address ILIKE %s AND (%s='all' OR (%s='blocked' AND COALESCE(b.payload->>'blocked','false')='true')
-                OR (%s='active' AND COALESCE(b.payload->>'blocked','false')<>'true')) ORDER BY a.last_polled_ms DESC,a.address LIMIT %s""",
-            (f"%{address_query.strip().lower()}%" if address_query.strip() else "%",address_status,address_status,address_status,address_limit)).fetchall() if address_limit else []
-        for row in address_rows:
-            note = row["note_payload"] if isinstance(row["note_payload"], dict) else json.loads(row["note_payload"] or "{}")
-            block = row["block_payload"] if isinstance(row["block_payload"], dict) else json.loads(row["block_payload"] or "{}")
-            if address_status == "blocked" and not block.get("blocked"): continue
-            if address_status == "active" and block.get("blocked"): continue
-            item = dict(row); item["note"] = note.get("note", ""); item["blocked"] = bool(block.get("blocked")); item["display_name"] = item["note"] if item.get("name_manual_locked") else (item.get("current_name") or f"{item['address'][:4].lower()}地址")
-            addresses.append(item)
-        counts = {"addresses": int(conn.execute("SELECT count(*) AS n FROM hl_news_addresses").fetchone()["n"]), "events": int(conn.execute(f"SELECT count(*) AS n FROM {source}").fetchone()["n"])}
+            LEFT JOIN hl_news_normal_state ns USING(address) LEFT JOIN hl_news_state s USING(address)
+            LEFT JOIN hl_news_account_pool ap USING(address)
+            WHERE a.address ILIKE %s AND ({status_expr})
+            ORDER BY (lower(a.address)=lower(%s)) DESC,a.last_polled_ms DESC,a.address LIMIT %s""",
+            (f"%{address_query.strip().lower()}%" if address_query.strip() else "%",address_query.strip(),address_limit)).fetchall() if address_limit else []
+        addresses = [_shape_address_row(dict(row)) for row in address_rows]
+        counts = {
+            **_postgres_address_counts(conn, exprs),
+            "events": int(conn.execute(f"SELECT count(*) AS n FROM {source}").fetchone()["n"]),
+        }
         counts["test_cases"] = int(conn.execute("SELECT count(*) AS n FROM hl_news_test_cases").fetchone()["n"]) if dataset == "live" else counts["events"]
         visible = {card['key'] for card in scenario_cards(dataset=dataset)}
         selected = [item for item in SCENARIOS if item[0] in visible]

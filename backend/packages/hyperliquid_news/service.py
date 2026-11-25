@@ -80,6 +80,7 @@ class NewsMonitor:
                 if cap.get('provider_updated_ms') is not None:
                     markets[coin]['market_cap_provider_updated_ms'] = int(cap['provider_updated_ms'])
         self._discover(now_ms, markets, result)
+        pool_map = self.store.account_pool_map() if hasattr(self.store, 'account_pool_map') else {}
         for row in self.store.addresses(self.addresses_per_pass, normal_schedule=True):
             address = row['address']
             if self.store.blocked(address):
@@ -124,7 +125,9 @@ class NewsMonitor:
                 sources = row['sources']
                 if isinstance(sources, str):
                     sources = json.loads(sources)
-                reasons = enrichment_reasons(positions, sources, markets, self.rules)
+                pool_entry = pool_map.get(address)
+                account_qualified = bool(pool_entry['qualified']) if pool_entry is not None else None
+                reasons = enrichment_reasons(positions, sources, markets, self.rules, account_qualified=account_qualified)
                 official_windows = {s['window']: {'pnl': s['pnl'], 'rank': s['rank'], 'side': s['side'],
                                     'observed_ms': s['observed_ms']} for s in sources
                                     if s['kind'] == 'leaderboard' and s.get('window') and
