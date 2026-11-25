@@ -11,7 +11,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
 import requests
 
@@ -41,6 +41,13 @@ def decode_embedding_blob(payload: bytes, dimensions: int) -> list[float]:
     if dimensions == 0:
         return []
     return list(struct.unpack(f"<{dimensions}f", payload))
+
+
+def decode_embedding_row(row: Any) -> list[float]:
+    """Decode one embedding row from float32 blob or legacy JSON payload."""
+    if row["vector_blob"] is not None and row["dimensions"] is not None:
+        return decode_embedding_blob(bytes(row["vector_blob"]), int(row["dimensions"]))
+    return [float(value) for value in json.loads(str(row["vector_json"]))]
 
 
 def normalize_for_embedding(*, title: str | None, content: str) -> str:
@@ -386,14 +393,52 @@ class SearchCache:
             ).fetchone()
         if row is None:
             return None
-        if row["vector_blob"] is not None and row["dimensions"] is not None:
-            return decode_embedding_blob(bytes(row["vector_blob"]), int(row["dimensions"]))
-        return [float(value) for value in json.loads(str(row["vector_json"]))]
+        return decode_embedding_row(row)
+
+    def get_embeddings(
+        self,
+        items: Sequence[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], list[float]]:
+        """Batch-fetch cached vectors keyed by (cache_key, model, text_hash)."""
+        unique_items = list(dict.fromkeys(items))
+        if not unique_items:
+            return {}
+        wanted = set(unique_items)
+        keys = list(dict.fromkeys(item[0] for item in unique_items))
+        results: dict[tuple[str, str, str], list[float]] = {}
+        chunk_size = 400
+        with self._connect() as conn:
+            for start in range(0, len(keys), chunk_size):
+                chunk = keys[start : start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT cache_key, model, content_hash, vector_json, vector_blob, dimensions
+                    FROM embeddings
+                    WHERE cache_key IN ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    lookup = (str(row["cache_key"]), str(row["model"]), str(row["content_hash"]))
+                    if lookup in wanted:
+                        results[lookup] = decode_embedding_row(row)
+        return results
 
     def set_embedding(self, *, cache_key: str, model: str, text_hash: str, vector: list[float]) -> None:
-        vector_blob = encode_embedding_blob(vector)
+        self.set_embeddings([(cache_key, model, text_hash, vector)])
+
+    def set_embeddings(self, items: Sequence[tuple[str, str, str, list[float]]]) -> None:
+        """Batch-upsert embedding vectors in one SQLite transaction."""
+        deduped = {
+            cache_key: (cache_key, model, text_hash, vector)
+            for cache_key, model, text_hash, vector in items
+        }
+        if not deduped:
+            return
+        now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
-            conn.execute(
+            conn.executemany(
                 """
                 INSERT INTO embeddings (
                     cache_key, model, content_hash, vector_json, vector_blob, dimensions, updated_at
@@ -407,7 +452,10 @@ class SearchCache:
                     dimensions = excluded.dimensions,
                     updated_at = excluded.updated_at
                 """,
-                (cache_key, model, text_hash, "", vector_blob, len(vector), datetime.now(UTC).isoformat()),
+                [
+                    (cache_key, model, text_hash, "", encode_embedding_blob(vector), len(vector), now)
+                    for cache_key, model, text_hash, vector in deduped.values()
+                ],
             )
             conn.commit()
 
@@ -876,22 +924,52 @@ class CachedEmbeddingService:
         return vector
 
     def embed_documents(self, documents: list[SearchDocument]) -> list[tuple[SearchDocument, list[float]]]:
-        self.cache.upsert_documents(documents)
-        results: list[tuple[SearchDocument, list[float]]] = []
-        missing: list[tuple[SearchDocument, str, str]] = []
-        for document in documents:
-            key = document_cache_key(document)
-            text = document.embedding_text
-            text_hash = content_hash(text)
-            cached = self.cache.get_embedding(cache_key=key, model=self.client.model, text_hash=text_hash)
-            if cached is None:
-                missing.append((document, key, text_hash))
+        if not documents:
+            return []
+        prepared = [
+            (document, document_cache_key(document), content_hash(document.embedding_text))
+            for document in documents
+        ]
+        batch_getter = getattr(self.cache, "get_embeddings", None)
+        if callable(batch_getter):
+            cached_by_key = batch_getter(
+                [(key, self.client.model, text_hash) for _doc, key, text_hash in prepared]
+            )
+        else:
+            cached_by_key = {}
+            for _doc, key, text_hash in prepared:
+                lookup = (key, self.client.model, text_hash)
+                if lookup not in cached_by_key:
+                    cached = self.cache.get_embedding(cache_key=key, model=self.client.model, text_hash=text_hash)
+                    if cached is not None:
+                        cached_by_key[lookup] = cached
+
+        unique_missing: list[tuple[SearchDocument, str, str]] = []
+        missing_seen: set[tuple[str, str]] = set()
+        for document, key, text_hash in prepared:
+            if (key, self.client.model, text_hash) not in cached_by_key:
+                dedup_key = (key, text_hash)
+                if dedup_key not in missing_seen:
+                    missing_seen.add(dedup_key)
+                    unique_missing.append((document, key, text_hash))
+
+        if unique_missing:
+            vectors = self.client.embed([document.embedding_text for document, _key, _hash in unique_missing])
+            batch_entries: list[tuple[str, str, str, list[float]]] = []
+            for (_document, key, text_hash), vector in zip(unique_missing, vectors):
+                cached_by_key[(key, self.client.model, text_hash)] = vector
+                batch_entries.append((key, self.client.model, text_hash, vector))
+            batch_setter = getattr(self.cache, "set_embeddings", None)
+            if callable(batch_setter):
+                batch_setter(batch_entries)
             else:
-                results.append((document, cached))
-        if missing:
-            vectors = self.client.embed([document.embedding_text for document, _key, _hash in missing])
-            for (document, key, text_hash), vector in zip(missing, vectors):
-                self.cache.set_embedding(cache_key=key, model=self.client.model, text_hash=text_hash, vector=vector)
+                for key, model, text_hash, vector in batch_entries:
+                    self.cache.set_embedding(cache_key=key, model=model, text_hash=text_hash, vector=vector)
+
+        results: list[tuple[SearchDocument, list[float]]] = []
+        for document, key, text_hash in prepared:
+            vector = cached_by_key.get((key, self.client.model, text_hash))
+            if vector is not None:
                 results.append((document, vector))
         return results
 

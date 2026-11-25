@@ -542,3 +542,69 @@ def test_writer_prompt_receives_same_event_update_facts_and_prior_copy() -> None
     assert "听证日期确定为11月18日" in prompt
     assert "Justin Sun要求WLFI承担相关制裁费用。" in prompt
     assert "本次稿件应以当前材料为准" in prompt
+
+
+def test_search_cache_and_embedding_service_batch_lookup_and_dedup(tmp_path: Path) -> None:
+    from packages.x_processing.searcher import CachedEmbeddingService, SearchCache, content_hash, document_cache_key
+
+    cache = SearchCache(tmp_path / "searcher.sqlite")
+    docs = [
+        SearchDocument(doc_type="odaily_reference", doc_id=f"ref-{i}", title=f"Title {i}", content=f"Body {i}", source="odaily")
+        for i in range(5)
+    ]
+    pre_cached_key = document_cache_key(docs[0])
+    pre_cached_hash = content_hash(docs[0].embedding_text)
+    cache.set_embeddings([(pre_cached_key, "test-emb", pre_cached_hash, [1.0, 0.0])])
+
+    embed_calls: list[list[str]] = []
+    get_batch_calls: list[int] = []
+    set_batch_calls: list[int] = []
+
+    orig_get_embeddings = cache.get_embeddings
+    orig_set_embeddings = cache.set_embeddings
+
+    def spy_get_embeddings(items):
+        get_batch_calls.append(len(items))
+        return orig_get_embeddings(items)
+
+    def spy_set_embeddings(items):
+        set_batch_calls.append(len(items))
+        return orig_set_embeddings(items)
+
+    def fail_single_get(**_kwargs):
+        raise AssertionError("batch get_embeddings should be used instead of per-doc get_embedding")
+
+    def fail_single_set(**_kwargs):
+        raise AssertionError("batch set_embeddings should be used instead of per-doc set_embedding")
+
+    def fail_upsert(_docs):
+        raise AssertionError("embed_documents should not rewrite x_search_documents")
+
+    cache.get_embeddings = spy_get_embeddings  # type: ignore[method-assign]
+    cache.set_embeddings = spy_set_embeddings  # type: ignore[method-assign]
+    cache.get_embedding = fail_single_get  # type: ignore[method-assign]
+    cache.set_embedding = fail_single_set  # type: ignore[method-assign]
+    cache.upsert_documents = fail_upsert  # type: ignore[method-assign]
+
+    class FakeClient:
+        model = "test-emb"
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            embed_calls.append(list(texts))
+            return [[0.5, float(idx + 1)] for idx, _ in enumerate(texts)]
+
+    service = CachedEmbeddingService(client=FakeClient(), cache=cache)
+    # Include a duplicate doc to verify deduplication of missing embeddings and preservation of output length.
+    input_docs = [docs[0], docs[1], docs[1], docs[2]]
+    embedded = service.embed_documents(input_docs)
+
+    assert [doc.doc_id for doc, _vec in embedded] == ["ref-0", "ref-1", "ref-1", "ref-2"]
+    assert embedded[0][1] == [1.0, 0.0]
+    assert embedded[1][1] == embedded[2][1]
+    assert get_batch_calls == [4]
+    assert set_batch_calls == [2]
+    assert len(embed_calls) == 1
+    assert len(embed_calls[0]) == 2
+    assert orig_get_embeddings(
+        [(document_cache_key(docs[2]), "test-emb", content_hash(docs[2].embedding_text))]
+    )[(document_cache_key(docs[2]), "test-emb", content_hash(docs[2].embedding_text))] == embedded[3][1]

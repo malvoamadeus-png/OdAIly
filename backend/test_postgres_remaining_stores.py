@@ -363,6 +363,22 @@ def test_postgres_search_cache_roundtrips_vectors_lifecycle_and_documents(isolat
     cache = PostgresSearchCache()
     cache.set_embedding(cache_key="query:q1", model="test", text_hash="hash", vector=[0.25, -1.5, 8.0])
     assert cache.get_embedding(cache_key="query:q1", model="test", text_hash="hash") == [0.25, -1.5, 8.0]
+    cache.set_embeddings([
+        ("query:q2", "test", "h2", [1.0, 2.0]),
+        ("query:q2", "test", "h2b", [3.0, 4.0]),
+        ("query:q3", "test", "h3", [5.0, 6.0]),
+    ])
+    batch = cache.get_embeddings([
+        ("query:q1", "test", "hash"),
+        ("query:q2", "test", "h2b"),
+        ("query:q3", "test", "h3"),
+        ("query:missing", "test", "none"),
+    ])
+    assert batch == {
+        ("query:q1", "test", "hash"): [0.25, -1.5, 8.0],
+        ("query:q2", "test", "h2b"): [3.0, 4.0],
+        ("query:q3", "test", "h3"): [5.0, 6.0],
+    }
     now = datetime.now(UTC)
     cache.upsert_active_candidate(candidate_id=7, task_id=9, title="候选", content="内容", source="x", source_item_id="x:9", source_url=None)
     assert [item.candidate_id for item in cache.list_active_candidate_documents()] == [7]
@@ -370,7 +386,8 @@ def test_postgres_search_cache_roundtrips_vectors_lifecycle_and_documents(isolat
     assert len(cache.list_recent_processed_documents()) == 1
     doc = SearchDocument("odaily_reference", "ref1", "引用", "正文", "odaily", published_at=now,
         created_at=now, updated_at=now, metadata={"kept": True})
-    cache.upsert_document(doc)
+    cache.upsert_documents([doc, doc])
+    cache.upsert_documents([doc])
     assert cache.list_odaily_reference_documents(since=now - timedelta(minutes=1))[0].metadata == {"kept": True}
 
 

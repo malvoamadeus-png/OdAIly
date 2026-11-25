@@ -90,6 +90,7 @@ from packages.x_processing.searcher import (
     cosine_similarity,
     exact_duplicate_decision,
     parse_ai_review_output,
+    top_matches,
 )
 from packages.x_processing.title_trace import normalize_known_title_subject_names
 from packages.x_processing.worker import build_writer_prompt
@@ -1244,17 +1245,20 @@ class EditorPluginNewsGenService:
                 cache_key=f"editor-plugin-query:{query.doc_id}",
                 text=query.embedding_text,
             )
-            vector_candidates = self._build_vector_candidates(
-                query_vector=query_vector,
-                odaily_documents=odaily_documents,
-                active_documents=active_documents,
+            odaily_embeddings = self.embedding_service.embed_documents(odaily_documents)
+            active_embeddings = self.embedding_service.embed_documents(active_documents)
+            odaily_matches = top_matches(query_vector, odaily_embeddings, limit=len(odaily_embeddings))
+            active_matches = top_matches(query_vector, active_embeddings, limit=len(active_embeddings))
+            vector_candidates = self._build_vector_candidates_from_matches(
+                odaily_matches=odaily_matches,
+                active_matches=active_matches,
             )
 
             if decision is None:
-                odaily_match = self._top_vector_match(query_vector=query_vector, documents=odaily_documents)
+                odaily_match = odaily_matches[0] if odaily_matches else None
                 decision = self._decide_vector_match(query=query, match=odaily_match, target_type="odaily_published")
             if decision is None:
-                active_match = self._top_vector_match(query_vector=query_vector, documents=active_documents)
+                active_match = active_matches[0] if active_matches else None
                 decision = self._decide_vector_match(query=query, match=active_match, target_type="inflight_candidate")
 
             result_payload = {
@@ -1451,12 +1455,8 @@ class EditorPluginNewsGenService:
         if not documents:
             return None
         embeddings = self.embedding_service.embed_documents(documents)
-        best: SearchMatch | None = None
-        for document, vector in embeddings:
-            similarity = cosine_similarity(query_vector, vector)
-            if best is None or similarity > best.similarity:
-                best = SearchMatch(document=document, similarity=similarity)
-        return best
+        matches = top_matches(query_vector, embeddings, limit=1)
+        return matches[0] if matches else None
 
     def _build_vector_candidates(
         self,
@@ -1465,15 +1465,27 @@ class EditorPluginNewsGenService:
         odaily_documents: list[SearchDocument],
         active_documents: list[SearchDocument],
     ) -> list[dict[str, Any]]:
-        scored: list[tuple[SearchDocument, float, str]] = []
-        for document, vector in self.embedding_service.embed_documents(odaily_documents):
-            scored.append((document, cosine_similarity(query_vector, vector), "odaily_published"))
-        for document, vector in self.embedding_service.embed_documents(active_documents):
-            scored.append((document, cosine_similarity(query_vector, vector), "inflight_candidate"))
+        odaily_embeddings = self.embedding_service.embed_documents(odaily_documents)
+        active_embeddings = self.embedding_service.embed_documents(active_documents)
+        return self._build_vector_candidates_from_matches(
+            odaily_matches=top_matches(query_vector, odaily_embeddings, limit=len(odaily_embeddings)),
+            active_matches=top_matches(query_vector, active_embeddings, limit=len(active_embeddings)),
+        )
 
+    def _build_vector_candidates_from_matches(
+        self,
+        *,
+        odaily_matches: list[SearchMatch],
+        active_matches: list[SearchMatch],
+    ) -> list[dict[str, Any]]:
+        scored = [
+            *((match, "odaily_published") for match in odaily_matches),
+            *((match, "inflight_candidate") for match in active_matches),
+        ]
         seen: set[tuple[str, str]] = set()
         rows: list[dict[str, Any]] = []
-        for document, similarity, target_type in sorted(scored, key=lambda item: item[1], reverse=True):
+        for match, target_type in sorted(scored, key=lambda item: item[0].similarity, reverse=True):
+            document = match.document
             key = (target_type, document.doc_id)
             if key in seen:
                 continue
@@ -1485,7 +1497,7 @@ class EditorPluginNewsGenService:
                     "title": document.title or "无标题",
                     "published_at": document.published_at.isoformat() if document.published_at else None,
                     "source_url": document.source_url,
-                    "similarity": round(similarity, 4),
+                    "similarity": round(match.similarity, 4),
                 }
             )
             if len(rows) >= 5:
@@ -2123,8 +2135,11 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         if compressed:
             self.send_header('Content-Encoding', 'gzip')
         self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _json_default(self, value: Any) -> Any:
         if isinstance(value, datetime):

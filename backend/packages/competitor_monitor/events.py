@@ -290,30 +290,63 @@ class NewsflashEventAggregator:
         if not records:
             return {}
         started = time.monotonic()
-        texts: list[str] = []
-        missing: list[tuple[NewsflashItemRecord, str, str]] = []
-        vectors: dict[int, list[float]] = {}
+        prepared = []
         for record in records:
             document = record.to_document()
             key = newsflash_cache_key(record)
             text = document.embedding_text
-            text_hash = _content_hash(text)
-            cached = self.cache.get_embedding(cache_key=key, model=self.embedding_client.model, text_hash=text_hash)
-            if cached is None:
-                missing.append((record, key, text_hash))
-                texts.append(text)
-            else:
+            prepared.append((record, document, key, text, _content_hash(text)))
+
+        self.cache.upsert_documents([document for _record, document, _key, _text, _hash in prepared])
+        batch_getter = getattr(self.cache, "get_embeddings", None)
+        if callable(batch_getter):
+            cached_by_key = batch_getter(
+                [(key, self.embedding_client.model, text_hash) for _record, _doc, key, _text, text_hash in prepared]
+            )
+        else:
+            cached_by_key = {}
+            for _record, _doc, key, _text, text_hash in prepared:
+                lookup = (key, self.embedding_client.model, text_hash)
+                if lookup not in cached_by_key:
+                    cached = self.cache.get_embedding(cache_key=key, model=self.embedding_client.model, text_hash=text_hash)
+                    if cached is not None:
+                        cached_by_key[lookup] = cached
+
+        vectors: dict[int, list[float]] = {}
+        missing: list[tuple[NewsflashItemRecord, str, str, str]] = []
+        missing_seen: set[tuple[str, str]] = set()
+        unique_missing: list[tuple[NewsflashItemRecord, str, str, str]] = []
+        for record, _doc, key, text, text_hash in prepared:
+            cached = cached_by_key.get((key, self.embedding_client.model, text_hash))
+            if cached is not None:
                 vectors[record.id] = cached
-            self.cache.upsert_document(document)
-        if missing:
-            print(f"[odaily] competitor event embeddings request missing={len(missing)} cached={len(vectors)}")
-            embedded = self.embedding_client.embed(texts)
-            for (record, key, text_hash), vector in zip(missing, embedded):
-                self.cache.set_embedding(cache_key=key, model=self.embedding_client.model, text_hash=text_hash, vector=vector)
-                vectors[record.id] = vector
+                continue
+            missing.append((record, key, text, text_hash))
+            dedup_key = (key, text_hash)
+            if dedup_key not in missing_seen:
+                missing_seen.add(dedup_key)
+                unique_missing.append((record, key, text, text_hash))
+
+        if unique_missing:
+            print(f"[odaily] competitor event embeddings request missing={len(unique_missing)} cached={len(vectors)}")
+            embedded = self.embedding_client.embed([text for _record, _key, text, _hash in unique_missing])
+            batch_entries: list[tuple[str, str, str, list[float]]] = []
+            for (_record, key, _text, text_hash), vector in zip(unique_missing, embedded):
+                cached_by_key[(key, self.embedding_client.model, text_hash)] = vector
+                batch_entries.append((key, self.embedding_client.model, text_hash, vector))
+            batch_setter = getattr(self.cache, "set_embeddings", None)
+            if callable(batch_setter):
+                batch_setter(batch_entries)
+            else:
+                for key, model, text_hash, vector in batch_entries:
+                    self.cache.set_embedding(cache_key=key, model=model, text_hash=text_hash, vector=vector)
+            for record, key, _text, text_hash in missing:
+                vector = cached_by_key.get((key, self.embedding_client.model, text_hash))
+                if vector is not None:
+                    vectors[record.id] = vector
         print(
             "[odaily] competitor event embeddings ready "
-            f"records={len(records)} missing={len(missing)} elapsed_seconds={time.monotonic() - started:.1f}"
+            f"records={len(records)} missing={len(unique_missing)} elapsed_seconds={time.monotonic() - started:.1f}"
         )
         return vectors
 

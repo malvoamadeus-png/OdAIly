@@ -114,19 +114,21 @@ def connect_postgres(
     current = settings or load_postgres_settings()
     pool = _pool_for(current)
     with pool.connection(timeout=current.pool_checkout_timeout_seconds) as connection:
-        connection.execute("SET search_path TO " + search_path_sql)
-        connection.execute("SET TIME ZONE 'UTC'")
         connection.execute(
-            "SELECT pg_catalog.set_config('statement_timeout', %s, false), "
+            "SELECT pg_catalog.set_config('search_path', %s, false), "
+            "pg_catalog.set_config('TimeZone', 'UTC', false), "
+            "pg_catalog.set_config('statement_timeout', %s, false), "
             "pg_catalog.set_config('lock_timeout', %s, false), "
-            "pg_catalog.set_config('idle_in_transaction_session_timeout', %s, false)",
+            "pg_catalog.set_config('idle_in_transaction_session_timeout', %s, false), "
+            "pg_catalog.set_config('application_name', %s, false)",
             (
+                search_path_sql,
                 f"{current.statement_timeout_ms}ms",
                 f"{current.lock_timeout_ms}ms",
                 f"{current.idle_transaction_timeout_ms}ms",
+                application_name.strip(),
             ),
         )
-        connection.execute("SELECT pg_catalog.set_config('application_name', %s, false)", (application_name.strip(),))
         yield connection
 
 

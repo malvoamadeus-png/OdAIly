@@ -580,3 +580,64 @@ def test_hyperliquid_block_route_requires_admin_and_passes_actor():
             assert service.subscription_payloads==([('operator@example.com',payload)] if allowed else [])
         finally:
             server.shutdown();thread.join(timeout=2);server.server_close()
+
+
+def test_plugin_run_search_embeds_each_document_set_once() -> None:
+    import math
+    from datetime import UTC, datetime
+    from packages.common.config import XProcessingSettings
+    from packages.x_processing.searcher import SearchDocument
+
+    now = datetime.now(UTC)
+    odaily_docs = [
+        SearchDocument(doc_type="odaily_reference", doc_id="o-1", title="Old 1", content="First reference", source="odaily_reference", published_at=now),
+        SearchDocument(doc_type="odaily_reference", doc_id="o-2", title="Old 2", content="Second reference", source="odaily_reference", published_at=now),
+    ]
+    active_docs = [
+        SearchDocument(doc_type="candidate", doc_id="10", title="Cand 1", content="Candidate body", source="candidate", candidate_id=10, published_at=now),
+    ]
+
+    embed_batches: list[list[str]] = []
+
+    class FakeEmbeddingService:
+        def embed_one(self, *, cache_key: str, text: str) -> list[float]:
+            return [1.0, 0.0]
+
+        def embed_documents(self, documents: list[SearchDocument]) -> list[tuple[SearchDocument, list[float]]]:
+            embed_batches.append([doc.doc_id for doc in documents])
+            sims = {"o-1": 0.50, "o-2": 0.72, "10": 0.40}
+            return [(doc, [sims[doc.doc_id], math.sqrt(1.0 - sims[doc.doc_id] ** 2)]) for doc in documents]
+
+    ai_prompts: list[str] = []
+
+    class FakeAI:
+        def generate_text(self, **kwargs: object) -> str:
+            ai_prompts.append(str(kwargs["prompt"]))
+            return json.dumps({
+                "is_duplicate": False,
+                "duplicate_target_type": "none",
+                "duplicate_target_id": "",
+                "reason": "same_topic_different_event",
+            })
+
+    service = object.__new__(EditorPluginNewsGenService)
+    service.x_settings = XProcessingSettings(search_ai_review_threshold=0.65, search_duplicate_threshold=0.88)
+    service.x_repository = SimpleNamespace(
+        list_odaily_reference_documents=lambda **_kwargs: odaily_docs,
+        list_active_candidate_documents=lambda: active_docs,
+    )
+    service.embedding_service = FakeEmbeddingService()
+    service.search_ai_client = FakeAI()
+    logged: list[dict[str, object]] = []
+    service.auth_repository = SimpleNamespace(insert_generation_log=lambda entry: logged.append({"status": entry.status}))
+
+    actor = AuthenticatedEditor(user_id="editor", email="editor@example.com", display_name="editor")
+    result = service.run_search(actor, EditorPluginRequestModel(post_text="Fresh breaking event text"))
+
+    assert embed_batches == [["o-1", "o-2"], ["10"]]
+    assert len(ai_prompts) == 1
+    assert "o-2" in ai_prompts[0]
+    assert result["is_duplicate"] is False
+    assert result["reason"] == "same_topic_different_event"
+    assert [row["target_id"] for row in result["top_candidates"]] == ["o-2", "o-1", "10"]
+    assert logged == [{"status": "success"}]

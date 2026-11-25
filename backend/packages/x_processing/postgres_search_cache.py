@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from packages.common.pg_native import PostgresMigration, apply_schema_migrations, connect_postgres
 from .models import ACTIVE_CANDIDATE_TTL
 from .searcher import (SearchCacheMaintenanceResult, SearchDocument, _row_to_search_document,
-                       content_hash, decode_embedding_blob, document_cache_key, encode_embedding_blob)
+                       content_hash, decode_embedding_row, document_cache_key, encode_embedding_blob)
 
 
 _SCHEMA = """
@@ -38,28 +38,169 @@ class PostgresSearchCache:
 
     def get_embedding(self, *, cache_key: str, model: str, text_hash: str) -> list[float] | None:
         with self._connect("embedding-read") as conn:
-            row = conn.execute("SELECT vector_json,vector_blob,dimensions FROM x_search_embeddings WHERE cache_key=%s AND model=%s AND content_hash=%s", (cache_key, model, text_hash)).fetchone()
-        if row is None: return None
-        if row["vector_blob"] is not None and row["dimensions"] is not None: return decode_embedding_blob(bytes(row["vector_blob"]), int(row["dimensions"]))
-        return [float(value) for value in json.loads(row["vector_json"])]
+            row = conn.execute(
+                "SELECT vector_json,vector_blob,dimensions FROM x_search_embeddings WHERE cache_key=%s AND model=%s AND content_hash=%s",
+                (cache_key, model, text_hash),
+            ).fetchone()
+        if row is None:
+            return None
+        return decode_embedding_row(row)
+
+    def get_embeddings(self, items: Sequence[tuple[str, str, str]]) -> dict[tuple[str, str, str], list[float]]:
+        """Batch-fetch cached embedding vectors in a single PK join query."""
+        unique_items = list(dict.fromkeys(items))
+        if not unique_items:
+            return {}
+        cache_keys = [item[0] for item in unique_items]
+        models = [item[1] for item in unique_items]
+        hashes = [item[2] for item in unique_items]
+        with self._connect("embedding-read") as conn:
+            rows = conn.execute(
+                """
+                SELECT e.cache_key, e.model, e.content_hash, e.vector_json, e.vector_blob, e.dimensions
+                FROM x_search_embeddings AS e
+                JOIN unnest(%s::text[], %s::text[], %s::text[]) AS q(cache_key, model, content_hash)
+                  ON e.cache_key = q.cache_key
+                 AND e.model = q.model
+                 AND e.content_hash = q.content_hash
+                """,
+                (cache_keys, models, hashes),
+            ).fetchall()
+        return {
+            (str(row["cache_key"]), str(row["model"]), str(row["content_hash"])): decode_embedding_row(row)
+            for row in rows
+        }
 
     def set_embedding(self, *, cache_key: str, model: str, text_hash: str, vector: list[float]) -> None:
+        self.set_embeddings([(cache_key, model, text_hash, vector)])
+
+    def set_embeddings(self, items: Sequence[tuple[str, str, str, list[float]]]) -> None:
+        """Batch-upsert embedding vectors in one SQL statement."""
+        deduped = {
+            cache_key: (cache_key, model, text_hash, vector)
+            for cache_key, model, text_hash, vector in items
+        }
+        if not deduped:
+            return
+        now = datetime.now(UTC)
+        entries = list(deduped.values())
+        cache_keys = [entry[0] for entry in entries]
+        models = [entry[1] for entry in entries]
+        hashes = [entry[2] for entry in entries]
+        blobs = [encode_embedding_blob(entry[3]) for entry in entries]
+        dimensions = [len(entry[3]) for entry in entries]
+        updated_at = [now] * len(entries)
         with self._connect("embedding-write") as conn:
-            conn.execute("""INSERT INTO x_search_embeddings(cache_key,model,content_hash,vector_json,vector_blob,dimensions,updated_at) VALUES(%s,%s,%s,'',%s,%s,%s)
-                ON CONFLICT(cache_key) DO UPDATE SET model=excluded.model,content_hash=excluded.content_hash,vector_json='',vector_blob=excluded.vector_blob,dimensions=excluded.dimensions,updated_at=excluded.updated_at""",
-                (cache_key,model,text_hash,encode_embedding_blob(vector),len(vector),datetime.now(UTC)))
+            conn.execute(
+                """
+                INSERT INTO x_search_embeddings(cache_key,model,content_hash,vector_json,vector_blob,dimensions,updated_at)
+                SELECT q.cache_key,q.model,q.content_hash,'',q.vector_blob,q.dimensions,q.updated_at
+                FROM unnest(%s::text[],%s::text[],%s::text[],%s::bytea[],%s::integer[],%s::timestamptz[])
+                  AS q(cache_key,model,content_hash,vector_blob,dimensions,updated_at)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    model=excluded.model,
+                    content_hash=excluded.content_hash,
+                    vector_json='',
+                    vector_blob=excluded.vector_blob,
+                    dimensions=excluded.dimensions,
+                    updated_at=excluded.updated_at
+                """,
+                (cache_keys, models, hashes, blobs, dimensions, updated_at),
+            )
 
     def upsert_document(self, document: SearchDocument) -> None: self.upsert_documents([document])
 
     def upsert_documents(self, documents: list[SearchDocument]) -> None:
-        if not documents: return
+        if not documents:
+            return
         now = datetime.now(UTC)
+        deduped = {document_cache_key(doc): doc for doc in documents}
+        keys = list(deduped.keys())
+        entries = list(deduped.values())
         with self._connect("document-write") as conn:
-            with conn.transaction():
-                for doc in documents:
-                    conn.execute("""INSERT INTO x_search_documents(cache_key,doc_type,doc_id,source,task_id,candidate_id,title,content,source_url,published_at,status,created_at,expires_at,metadata_json,content_hash,updated_at)
-                        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(cache_key) DO UPDATE SET doc_type=excluded.doc_type,doc_id=excluded.doc_id,source=excluded.source,task_id=excluded.task_id,candidate_id=excluded.candidate_id,title=excluded.title,content=excluded.content,source_url=excluded.source_url,published_at=excluded.published_at,status=excluded.status,created_at=excluded.created_at,expires_at=excluded.expires_at,metadata_json=excluded.metadata_json,content_hash=excluded.content_hash,updated_at=excluded.updated_at""",
-                        (document_cache_key(doc),doc.doc_type,doc.doc_id,doc.source,doc.task_id,doc.candidate_id,doc.title,doc.content,doc.source_url,doc.published_at,doc.status,doc.created_at,doc.expires_at,self._Jsonb(doc.metadata),content_hash(doc.embedding_text),doc.updated_at or now))
+            conn.execute(
+                """
+                INSERT INTO x_search_documents(
+                    cache_key,doc_type,doc_id,source,task_id,candidate_id,title,content,
+                    source_url,published_at,status,created_at,expires_at,metadata_json,content_hash,updated_at
+                )
+                SELECT
+                    q.cache_key,q.doc_type,q.doc_id,q.source,q.task_id,q.candidate_id,q.title,q.content,
+                    q.source_url,q.published_at,q.status,q.created_at,q.expires_at,q.metadata_text::jsonb,q.content_hash,q.updated_at
+                FROM unnest(
+                    %s::text[],%s::text[],%s::text[],%s::text[],%s::bigint[],%s::bigint[],%s::text[],%s::text[],
+                    %s::text[],%s::timestamptz[],%s::text[],%s::timestamptz[],%s::timestamptz[],%s::text[],%s::text[],%s::timestamptz[]
+                ) AS q(
+                    cache_key,doc_type,doc_id,source,task_id,candidate_id,title,content,
+                    source_url,published_at,status,created_at,expires_at,metadata_text,content_hash,updated_at
+                )
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    doc_type=excluded.doc_type,
+                    doc_id=excluded.doc_id,
+                    source=excluded.source,
+                    task_id=excluded.task_id,
+                    candidate_id=excluded.candidate_id,
+                    title=excluded.title,
+                    content=excluded.content,
+                    source_url=excluded.source_url,
+                    published_at=excluded.published_at,
+                    status=excluded.status,
+                    created_at=excluded.created_at,
+                    expires_at=excluded.expires_at,
+                    metadata_json=excluded.metadata_json,
+                    content_hash=excluded.content_hash,
+                    updated_at=excluded.updated_at
+                WHERE (
+                    x_search_documents.doc_type,
+                    x_search_documents.doc_id,
+                    x_search_documents.source,
+                    x_search_documents.task_id,
+                    x_search_documents.candidate_id,
+                    x_search_documents.title,
+                    x_search_documents.content,
+                    x_search_documents.source_url,
+                    x_search_documents.published_at,
+                    x_search_documents.status,
+                    x_search_documents.created_at,
+                    x_search_documents.expires_at,
+                    x_search_documents.metadata_json,
+                    x_search_documents.content_hash
+                ) IS DISTINCT FROM (
+                    excluded.doc_type,
+                    excluded.doc_id,
+                    excluded.source,
+                    excluded.task_id,
+                    excluded.candidate_id,
+                    excluded.title,
+                    excluded.content,
+                    excluded.source_url,
+                    excluded.published_at,
+                    excluded.status,
+                    excluded.created_at,
+                    excluded.expires_at,
+                    excluded.metadata_json,
+                    excluded.content_hash
+                )
+                """,
+                (
+                    keys,
+                    [doc.doc_type for doc in entries],
+                    [doc.doc_id for doc in entries],
+                    [doc.source for doc in entries],
+                    [doc.task_id for doc in entries],
+                    [doc.candidate_id for doc in entries],
+                    [doc.title for doc in entries],
+                    [doc.content for doc in entries],
+                    [doc.source_url for doc in entries],
+                    [doc.published_at for doc in entries],
+                    [doc.status for doc in entries],
+                    [doc.created_at for doc in entries],
+                    [doc.expires_at for doc in entries],
+                    [json.dumps(doc.metadata, ensure_ascii=False, sort_keys=True) for doc in entries],
+                    [content_hash(doc.embedding_text) for doc in entries],
+                    [doc.updated_at or now for doc in entries],
+                ),
+            )
 
     def _list(self, sql: str, params: tuple[Any,...] = ()) -> list[SearchDocument]:
         with self._connect("document-read") as conn: rows=conn.execute(sql,params).fetchall()
