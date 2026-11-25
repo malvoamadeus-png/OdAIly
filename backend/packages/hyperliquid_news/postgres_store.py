@@ -605,18 +605,6 @@ class PostgresNewsStore:
                 return self.blocked(address, conn=connection)
         return bool(self._metadata_in_transaction(conn, "address_block:" + address_key(address), {}).get("blocked"))
 
-    def is_manual_protected(self, address: str) -> bool:
-        address = address_key(address)
-        with self._connect(autocommit=True) as conn:
-            row = conn.execute(
-                "SELECT manual_locked FROM hl_news_address_names WHERE address=%s",
-                (address,),
-            ).fetchone()
-            if row and bool(row["manual_locked"]):
-                return True
-        note = self.metadata("address_note:" + address, {})
-        return isinstance(note, dict) and (note.get("origin") == "manual" or (bool(note.get("note")) and "origin" not in note))
-
     def event_blocked(self, event: dict[str, Any], *, conn=None) -> bool:
         if conn is None:
             with self._connect() as connection:

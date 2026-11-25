@@ -144,7 +144,7 @@ class NewsMonitor:
                     now_ms=now_ms,
                     pagination_complete=coverage.get('pagination_complete', True),
                 ) if (reasons or pending) else None
-                if hft and not self.store.is_manual_protected(address):
+                if hft:
                     self.store.save_address_block(address, True, updated_by=HFT_AUTO_BLOCK_ACTOR)
                     result.setdefault('auto_blocked_hft', []).append({'address': address, **hft})
                     continue

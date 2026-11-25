@@ -272,7 +272,7 @@ def test_detect_high_frequency_quant_distinguishes_bots_from_twap_whales():
     assert early is not None and early["reason"] == "extrapolated_oids_24h_exceeded"
 
 
-def test_normal_monitor_auto_blocks_hft_unless_manual_protected(tmp_path):
+def test_normal_monitor_auto_blocks_hft_even_with_manual_note(tmp_path):
     from packages.hyperliquid_news.naming import NamingStore
 
     bot_addr = "0x4444444444444444444444444444444444444444"
@@ -301,14 +301,16 @@ def test_normal_monitor_auto_blocks_hft_unless_manual_protected(tmp_path):
     monitor = NewsMonitor(store=store, client=BotClient(), leaderboard_seeds=0, addresses_per_pass=2)
     report = monitor.run_once(now_ms=now_ms)
 
-    assert [item["address"] for item in report["auto_blocked_hft"]] == [bot_addr]
+    assert sorted(item["address"] for item in report["auto_blocked_hft"]) == [bot_addr, vip_addr]
     assert store.blocked(bot_addr) is True
+    assert store.blocked(vip_addr) is True
     assert store.metadata("normal_pending_fills:" + bot_addr, {}) == {}
-    assert store.blocked(vip_addr) is False
-    assert vip_addr in report["incomplete_history"]
+    assert store.metadata("normal_pending_fills:" + vip_addr, {}) == {}
+    assert store.metadata("address_note:" + vip_addr, {}).get("note") == "VIP巨鲸"
+    assert NamingStore(store.path).get(vip_addr)["manual_locked"] is True
 
 
-def test_account_monitor_discovery_probe_auto_blocks_mega_mm_on_first_poll(tmp_path):
+def test_account_monitor_discovery_probe_auto_blocks_mega_mm_even_with_manual_note(tmp_path):
     from packages.hyperliquid_news.account_monitor import AccountProfitMonitor, DAY
     from packages.hyperliquid_news.naming import NamingStore
 
@@ -327,6 +329,7 @@ def test_account_monitor_discovery_probe_auto_blocks_mega_mm_on_first_poll(tmp_p
     store.save_global("production_account_profit", {"enabled": True, "started_ms": started, "enabled_scenarios": ["account_profit"]}, [])
     store.discover(mm_addr, source={"kind": "leaderboard"}, now_ms=now_ms, limit=None)
     store.schedule_account(mm_addr, now_ms=now_ms, leaderboard_qualified=True)
+    store.save_address_note(mm_addr, "人工命名量化地址", updated_by="editor")
 
     class MegaMMClient(FakeClient):
         def leaderboard(self):

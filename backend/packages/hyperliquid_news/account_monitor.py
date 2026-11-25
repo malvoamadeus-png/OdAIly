@@ -267,7 +267,7 @@ class AccountProfitMonitor:
                 size_changed = ({c: str(p.size) for c, p in positions.items()} !=
                     {c: p['size'] for c, p in previous_positions.items()})
                 query_history = bool(baseline and (size_changed or pending or observed-history_checked >= 900000))
-                if not baseline and len(positions) >= HFT_DISCOVERY_POSITION_PROBE_THRESHOLD and not self.store.is_manual_protected(address):
+                if not baseline and len(positions) >= HFT_DISCOVERY_POSITION_PROBE_THRESHOLD:
                     stage = 'hft_discovery_probe'
                     stage_started = time.monotonic()
                     _log('account_monitor.address_stage_started', address=address, stage=stage,
@@ -308,7 +308,7 @@ class AccountProfitMonitor:
                     now_ms=observed,
                     pagination_complete=coverage.get('pagination_complete', True),
                 ) if query_history else None
-                if hft and not self.store.is_manual_protected(address):
+                if hft:
                     self.store.save_address_block(address, True, updated_by=HFT_AUTO_BLOCK_ACTOR)
                     report.setdefault('auto_blocked_hft', []).append({'address': address, **hft})
                     _log('account_monitor.address_auto_blocked', address=address, **hft,
