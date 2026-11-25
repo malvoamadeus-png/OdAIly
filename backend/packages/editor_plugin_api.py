@@ -1048,7 +1048,7 @@ class EditorPluginNewsGenService:
                          page=int(payload.get('page', 0)),
                          scenario=payload.get('scenario') or None, dataset=payload.get('dataset', 'live'),
                          view=payload.get('view', 'scenarios'), address_query=payload.get('address_query', ''),
-                         address_status=payload.get('address_status', 'active'))
+                         address_status=payload.get('address_status', 'all'))
 
     def get_hyperliquid_address_naming_details(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
         del actor
@@ -1226,7 +1226,7 @@ class EditorPluginNewsGenService:
         result_payload: dict[str, Any] | None = None
         try:
             since = datetime.now(UTC) - timedelta(hours=self.x_settings.search_window_hours)
-            odaily_documents = self.x_repository.list_odaily_reference_documents(since=since)
+            odaily_documents = self._load_search_odaily_documents(since=since)
             active_documents = self.x_repository.list_active_candidate_documents()
 
             decision = exact_duplicate_decision(
@@ -1445,6 +1445,26 @@ class EditorPluginNewsGenService:
 
     def _get_prompt(self, template_key: str) -> PromptTemplateVersion:
         return self.x_repository.get_active_prompt(template_key)
+
+    def _load_search_odaily_documents(self, *, since: datetime) -> list[SearchDocument]:
+        repo_documents = self.x_repository.list_odaily_reference_documents(since=since)
+        cache = getattr(self.embedding_service, "cache", None)
+        cache_lister = getattr(cache, "list_odaily_reference_documents", None)
+        if not callable(cache_lister):
+            return repo_documents
+        cached_documents = cache_lister(since=since)
+        if not cached_documents:
+            return repo_documents
+        # Prefer the warmed SearchCache copy so plugin search and local_pipeline
+        # compute identical content hashes against shared x_search_embeddings keys,
+        # while still including any brand-new repo items not yet warmed.
+        by_doc_id = {doc.doc_id: doc for doc in cached_documents}
+        merged = list(cached_documents)
+        for doc in repo_documents:
+            if doc.doc_id not in by_doc_id:
+                by_doc_id[doc.doc_id] = doc
+                merged.append(doc)
+        return merged
 
     def _top_vector_match(
         self,

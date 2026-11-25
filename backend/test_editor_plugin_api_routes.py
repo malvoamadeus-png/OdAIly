@@ -641,3 +641,54 @@ def test_plugin_run_search_embeds_each_document_set_once() -> None:
     assert result["reason"] == "same_topic_different_event"
     assert [row["target_id"] for row in result["top_candidates"]] == ["o-2", "o-1", "10"]
     assert logged == [{"status": "success"}]
+
+
+def test_plugin_run_search_prefers_cached_odaily_documents_and_keeps_unwarmed_repo_docs() -> None:
+    import math
+    from datetime import UTC, datetime
+    from packages.common.config import XProcessingSettings
+    from packages.x_processing.searcher import SearchDocument
+
+    now = datetime.now(UTC)
+    cached_docs = [
+        SearchDocument(doc_type="odaily_reference", doc_id="o-1", title="Title 1", content="API original text", source="odaily", published_at=now),
+    ]
+    repo_docs = [
+        SearchDocument(doc_type="odaily_reference", doc_id="o-1", title="Title 1", content="Cleaned repo text", source="odaily", published_at=now),
+        SearchDocument(doc_type="odaily_reference", doc_id="o-new", title="Title New", content="Brand new flash", source="odaily", published_at=now),
+    ]
+
+    embedded_contents: list[tuple[str, str]] = []
+
+    class FakeCache:
+        def list_odaily_reference_documents(self, *, since: datetime) -> list[SearchDocument]:
+            del since
+            return cached_docs
+
+    class FakeEmbeddingService:
+        cache = FakeCache()
+
+        def embed_one(self, *, cache_key: str, text: str) -> list[float]:
+            return [1.0, 0.0]
+
+        def embed_documents(self, documents: list[SearchDocument]) -> list[tuple[SearchDocument, list[float]]]:
+            embedded_contents.extend((doc.doc_id, doc.content) for doc in documents)
+            return [(doc, [0.4, math.sqrt(1.0 - 0.16)]) for doc in documents]
+
+    service = object.__new__(EditorPluginNewsGenService)
+    service.x_settings = XProcessingSettings(search_ai_review_threshold=0.65, search_duplicate_threshold=0.88)
+    service.x_repository = SimpleNamespace(
+        list_odaily_reference_documents=lambda **_kwargs: repo_docs,
+        list_active_candidate_documents=lambda: [],
+    )
+    service.embedding_service = FakeEmbeddingService()
+    service.search_ai_client = SimpleNamespace(
+        generate_text=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected AI call"))
+    )
+    service.auth_repository = SimpleNamespace(insert_generation_log=lambda _entry: None)
+
+    actor = AuthenticatedEditor(user_id="editor", email="editor@example.com", display_name="editor")
+    result = service.run_search(actor, EditorPluginRequestModel(post_text="Unrelated item"))
+
+    assert embedded_contents == [("o-1", "API original text"), ("o-new", "Brand new flash")]
+    assert [row["target_id"] for row in result["top_candidates"]] == ["o-1", "o-new"]
