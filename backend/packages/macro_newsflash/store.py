@@ -92,7 +92,13 @@ class MacroNewsflashStore:
                     "ALTER TABLE macro_newsflash_events ADD COLUMN delivery_started_at TEXT"
                 )
 
-    def schedule_refresh_due(self, *, max_age: timedelta = timedelta(hours=6)) -> bool:
+    def schedule_refresh_due(self, *, max_age: timedelta = timedelta(minutes=15)) -> bool:
+        next_refresh = self.next_schedule_refresh_at(max_age=max_age)
+        if next_refresh is None:
+            return True
+        return datetime.now(UTC) >= next_refresh
+
+    def next_schedule_refresh_at(self, *, max_age: timedelta = timedelta(minutes=15)) -> datetime | None:
         with self._connect() as connection:
             metadata = {
                 row["meta_key"]: row["meta_value"]
@@ -102,15 +108,15 @@ class MacroNewsflashStore:
             }
         refreshed_at_raw = metadata.get("schedule_refreshed_at")
         if refreshed_at_raw is None:
-            return True
+            return None
         try:
             refreshed_at = datetime.fromisoformat(refreshed_at_raw)
         except ValueError:
-            return True
+            return None
         if refreshed_at.tzinfo is None:
             refreshed_at = refreshed_at.replace(tzinfo=UTC)
-        refresh_after = timedelta(minutes=15) if json.loads(metadata.get("schedule_errors") or "{}") else max_age
-        return datetime.now(UTC) - refreshed_at.astimezone(UTC) >= refresh_after
+        refresh_after = min(max_age, timedelta(minutes=15)) if json.loads(metadata.get("schedule_errors") or "{}") else max_age
+        return refreshed_at.astimezone(UTC) + refresh_after
 
     def replace_release_schedule(self, releases: list[Any], *, refreshed_sources: set[str]) -> None:
         refreshed_at = datetime.now(UTC).isoformat(timespec="seconds")
@@ -125,7 +131,11 @@ class MacroNewsflashStore:
                 ).fetchone()
                 if existing and not existing["is_estimate"] and release.is_estimate:
                     continue
-                if existing and existing["source_name"] == "Census" and release.source_name.startswith("TradingView"):
+                if (
+                    existing
+                    and existing["source_name"] in {"BEA", "Federal Reserve", "Census", "BLS"}
+                    and release.source_name.startswith("TradingView")
+                ):
                     continue
                 connection.execute(
                     """INSERT OR REPLACE INTO macro_release_schedule (
@@ -143,6 +153,22 @@ class MacroNewsflashStore:
                         refreshed_at,
                     ),
                 )
+
+    def prune_source_errors(self, *, allowed_sources: set[str]) -> None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT meta_value FROM macro_newsflash_meta WHERE meta_key = 'source_errors'"
+            ).fetchone()
+            if not row:
+                return
+            source_errors = json.loads(row["meta_value"])
+            filtered = {key: value for key, value in source_errors.items() if key in allowed_sources}
+            if filtered == source_errors:
+                return
+            connection.execute(
+                "INSERT OR REPLACE INTO macro_newsflash_meta (meta_key, meta_value) VALUES (?, ?)",
+                ("source_errors", json.dumps(filtered, ensure_ascii=False)),
+            )
 
     def record_schedule_refresh(self, *, errors: dict[str, str]) -> None:
         refreshed_at = datetime.now(UTC).isoformat(timespec="seconds")

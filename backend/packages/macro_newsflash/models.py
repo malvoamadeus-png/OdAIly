@@ -23,13 +23,19 @@ class MacroUpdate:
     def event_key(self) -> str:
         release_id = self.raw_payload.get("jin10_release_id")
         if release_id:
+            if self.raw_payload.get("jin10_multi_metric"):
+                return f"jin10:{release_id}:{self.metric_id}"
             return f"jin10:{release_id}"
         return f"{self.metric_id}:{self.reference_period}"
 
     def headline(self) -> str:
-        if self.metric_id == "fomc_rate":
-            action = self.rate_action or "公布"
-            location = "在" if action == "维持" else "至"
-            return f"美国{self.period_label}利率决议{action}联邦基金利率目标区间{location}{self.actual}，前值{self.previous}"
+        if self.metric_id == "fomc_rate" and self.rate_action:
+            location = "在" if self.rate_action == "维持" else "至"
+            headline = f"美国{self.period_label}利率决议{self.rate_action}联邦基金利率目标区间{location}{self.actual}"
+            if self.previous and self.previous != "暂无":
+                headline = f"{headline}，前值{self.previous}"
+            if self.expected and self.expected != "暂无":
+                headline = f"{headline}，预期{self.expected}"
+            return headline
         headline = f"美国{self.period_label}{self.indicator}录得{self.actual}，前值{self.previous}"
         return f"{headline}，预期{self.expected}" if self.expected else headline

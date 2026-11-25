@@ -26,14 +26,18 @@ class PostgresMacroNewsflashStore:
     def initialize_schema():
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-migrate') as c:apply_schema_migrations(c,schema='macro_newsflash',component='macro_newsflash',migrations=(PostgresMigration(1,'macro newsflash persistence',CHECKSUM,lambda x:x.execute(SCHEMA_SQL)),))
     def initialize(self):self.initialize_schema()
-    def schedule_refresh_due(self,*,max_age:timedelta=timedelta(hours=6))->bool:
+    def schedule_refresh_due(self,*,max_age:timedelta=timedelta(minutes=15))->bool:
+        nxt=self.next_schedule_refresh_at(max_age=max_age)
+        return True if nxt is None else datetime.now(UTC)>=nxt
+    def next_schedule_refresh_at(self,*,max_age:timedelta=timedelta(minutes=15))->datetime|None:
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro') as c:meta={r['meta_key']:r['meta_value'] for r in c.execute('SELECT * FROM macro_newsflash_meta').fetchall()}
         raw=meta.get('schedule_refreshed_at')
-        if not raw:return True
+        if not raw:return None
         try:stamp=datetime.fromisoformat(raw)
-        except ValueError:return True
+        except ValueError:return None
         if stamp.tzinfo is None:stamp=stamp.replace(tzinfo=UTC)
-        return datetime.now(UTC)-stamp.astimezone(UTC)>= (timedelta(minutes=15) if json.loads(meta.get('schedule_errors') or '{}') else max_age)
+        refresh_after=min(max_age,timedelta(minutes=15)) if json.loads(meta.get('schedule_errors') or '{}') else max_age
+        return stamp.astimezone(UTC)+refresh_after
     def replace_release_schedule(self,releases:list[Any],*,refreshed_sources:set[str])->None:
         stamp=datetime.now(UTC).isoformat(timespec='seconds')
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro-schedule') as c:
@@ -42,8 +46,15 @@ class PostgresMacroNewsflashStore:
                 for r in releases:
                     old=c.execute('SELECT source_name,is_estimate FROM macro_release_schedule WHERE release_id=%s FOR UPDATE',(r.release_id,)).fetchone()
                     if old and not old['is_estimate'] and r.is_estimate:continue
-                    if old and old['source_name']=='Census' and r.source_name.startswith('TradingView'):continue
+                    if old and old['source_name'] in {'BEA','Federal Reserve','Census','BLS'} and r.source_name.startswith('TradingView'):continue
                     c.execute('INSERT INTO macro_release_schedule VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(release_id) DO UPDATE SET source_name=excluded.source_name,title=excluded.title,metric_ids_json=excluded.metric_ids_json,scheduled_at=excluded.scheduled_at,source_url=excluded.source_url,is_estimate=excluded.is_estimate,refreshed_at=excluded.refreshed_at',(r.release_id,r.source_name,r.title,json.dumps(r.metric_ids,ensure_ascii=False),r.scheduled_at,r.source_url,r.is_estimate,stamp))
+    def prune_source_errors(self,*,allowed_sources:set[str])->None:
+        with connect_postgres(schema='macro_newsflash',application_name='odaily-macro') as c:
+            with c.transaction():
+                row=c.execute("SELECT meta_value FROM macro_newsflash_meta WHERE meta_key='source_errors' FOR UPDATE").fetchone()
+                if not row:return
+                existing=json.loads(row['meta_value']);filtered={k:v for k,v in existing.items() if k in allowed_sources}
+                if filtered!=existing:c.execute("INSERT INTO macro_newsflash_meta VALUES('source_errors',%s) ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value",(json.dumps(filtered,ensure_ascii=False),))
     def _meta(self,values):
         with connect_postgres(schema='macro_newsflash',application_name='odaily-macro') as c:
             with c.transaction():

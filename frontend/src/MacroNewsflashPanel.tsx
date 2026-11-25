@@ -12,10 +12,11 @@ const METRIC_LABELS: Record<string, string> = {
   fomc_rate: '利率决议',
   pce_yoy: 'PCE物价指数年率',
   nonfarm_payrolls: '季调后非农就业人口',
-  unemployment_rate: '月失业率',
+  unemployment_rate: '失业率',
   cpi_yoy_nsa: '未季调CPI年率',
   cpi_mom_nsa: '未季调CPI月率',
   cpi_mom_sa: '季调后CPI月率',
+  core_cpi_yoy_nsa: '未季调核心CPI年率',
   core_cpi_mom_sa: '季调后核心CPI月率',
 };
 
@@ -25,7 +26,6 @@ const DELIVERY_LABELS: Record<string, string> = {
   published: '已挂后台',
   uncertain: '结果待确认',
 };
-const JIN10_TRACKED_METRICS = new Set(['initial_claims', 'pce_yoy']);
 
 function timeLabel(value: string | null | undefined, timeZone = 'Asia/Shanghai'): string {
   if (!value) return '—';
@@ -48,14 +48,19 @@ function eventStatus(event: MacroNewsflashEvent): string {
 
 function releaseTrackingStatus(
   release: MacroNewsflashDashboard['scheduled_releases'][number],
-  seenReleaseIds: Set<string>,
+  matchedMetricsByRelease: Map<string, Set<string>>,
   jin10Error: string | undefined,
   now: number,
 ): string {
-  if (!release.metric_ids.some((metricId) => JIN10_TRACKED_METRICS.has(metricId))) return '常规数据监测';
-  if (seenReleaseIds.has(release.release_id)) return '已发现并生成快讯';
-  if (jin10Error) return '最近一次 Jin10 请求异常';
+  const matchedCount = matchedMetricsByRelease.get(release.release_id)?.size ?? 0;
+  const totalCount = release.metric_ids.length;
   const secondsFromRelease = (new Date(release.scheduled_at).getTime() - now) / 1000;
+  if (matchedCount >= totalCount && totalCount > 0) return '已发现并生成快讯';
+  if (matchedCount > 0) {
+    if (secondsFromRelease >= -60) return `追踪窗口内 · 已匹配 ${matchedCount}/${totalCount}`;
+    return `已发现并生成快讯（${matchedCount}/${totalCount}）`;
+  }
+  if (jin10Error) return '最近一次 Jin10 请求异常';
   if (secondsFromRelease > 10) return '等待发布前10秒启动';
   if (secondsFromRelease >= -60) return '追踪窗口内 · 每轮约1秒';
   return '追踪窗口结束 · 未发现匹配快讯';
@@ -89,9 +94,13 @@ export function MacroNewsflashPanel({ refreshToken = 0 }: { refreshToken?: numbe
   for (const event of dashboard?.events ?? []) {
     if (!latestEvents.has(event.metric_id)) latestEvents.set(event.metric_id, event);
   }
-  const seenReleaseIds = new Set(
-    (dashboard?.events ?? []).map((event) => event.release_id).filter((id): id is string => Boolean(id)),
-  );
+  const matchedMetricsByRelease = new Map<string, Set<string>>();
+  for (const event of dashboard?.events ?? []) {
+    if (!event.release_id) continue;
+    const set = matchedMetricsByRelease.get(event.release_id) ?? new Set<string>();
+    set.add(event.metric_id);
+    matchedMetricsByRelease.set(event.release_id, set);
+  }
   return (
     <div className="macroNewsflashLayout">
       <div className="macroNewsflashToolbar">
@@ -151,7 +160,7 @@ export function MacroNewsflashPanel({ refreshToken = 0 }: { refreshToken?: numbe
                   <strong>{release.metric_ids.map((id) => METRIC_LABELS[id] ?? id).join('、')}</strong>
                   <span>{release.source_name} · {release.is_estimate ? '规律估算' : '已公布排程'}</span>
                   <small>{release.title}</small>
-                  <small>{releaseTrackingStatus(release, seenReleaseIds, dashboard?.source_errors.jin10_macro, now)}</small>
+                  <small>{releaseTrackingStatus(release, matchedMetricsByRelease, dashboard?.source_errors.jin10_macro, now)}</small>
                 </div>
                 <a href={release.source_url} target="_blank" rel="noreferrer">来源</a>
               </article>
@@ -175,7 +184,7 @@ export function MacroNewsflashPanel({ refreshToken = 0 }: { refreshToken?: numbe
                     <span>{metric.last_reference_period} · {metric.source_name}</span>
                   </div>
                   <div className="macroNewsflashMetricValue">
-                    {metric.actual || event ? <><strong>{metric.actual ?? event?.actual}</strong><span>前值 {metric.previous ?? event?.previous}</span>{JIN10_TRACKED_METRICS.has(metric.metric_id) && <span>预期 {metric.expected ?? event?.expected ?? '暂无'}</span>}</> : <span>已采集 · 尚无快讯记录</span>}
+                    {metric.actual || event ? <><strong>{metric.actual ?? event?.actual}</strong><span>前值 {metric.previous ?? event?.previous}</span>{(metric.expected || event?.expected) && <span>预期 {metric.expected ?? event?.expected}</span>}</> : <span>已采集 · 尚无快讯记录</span>}
                   </div>
                   <div className="macroNewsflashMetricStatus">
                     <span>{event ? eventStatus(event) : '基线已建立'}</span>

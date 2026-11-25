@@ -25,6 +25,21 @@ MONTHS = {
     for alias in (name, name[:3])
 }
 MONTH_PATTERN = "|".join(sorted(MONTHS, key=len, reverse=True))
+OFFICIAL_CALENDAR_SOURCES = {"BEA", "Federal Reserve", "BLS", "Census"}
+TRADINGVIEW_SOURCE_NAMES = {
+    "TradingView · BLS",
+    "TradingView · Census Bureau",
+    "TradingView · Department of Labor",
+    "TradingView · BEA",
+    "TradingView · Federal Reserve",
+}
+CPI_METRIC_IDS = (
+    "cpi_yoy_nsa",
+    "cpi_mom_nsa",
+    "cpi_mom_sa",
+    "core_cpi_yoy_nsa",
+    "core_cpi_mom_sa",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,53 +59,32 @@ def fetch_release_schedule(
     now: datetime | None = None,
 ) -> tuple[list[ScheduledRelease], dict[str, str], set[str]]:
     current = (now or datetime.now(UTC)).astimezone(UTC)
-    sources = (
-        (
-            "BLS",
-            settings.bls_schedule_url,
-            ("employment situation", "consumer price index"),
-            {"employment situation": ("bls_employment", ("nonfarm_payrolls", "unemployment_rate")),
-             "consumer price index": ("bls_cpi", ("cpi_yoy_nsa", "cpi_mom_nsa", "cpi_mom_sa", "core_cpi_mom_sa"))},
-        ),
-        (
-            "Census",
-            settings.census_schedule_url,
-            ("advance monthly sales", "retail sales"),
-            {"advance monthly sales": ("census_retail_sales", ("retail_sales_mom",)),
-             "retail sales": ("census_retail_sales", ("retail_sales_mom",))},
-        ),
-        (
-            "BEA",
-            settings.bea_schedule_url,
-            ("personal income and outlays",),
-            {"personal income and outlays": ("bea_pce", ("pce_yoy",))},
-        ),
-    )
     releases: list[ScheduledRelease] = []
     errors: dict[str, str] = {}
     successful_sources: set[str] = set()
-    for source_name, url, needles, mapping in sources:
-        try:
-            response = requests.get(
-                url,
-                headers={"User-Agent": "OdAIly-macro-newsflash/1.0"},
-                timeout=settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            parsed = _parse_release_rows(
-                response.text,
-                source_name=source_name,
-                source_url=url,
-                needles=needles,
-                mapping=mapping,
-                now=current,
-            )
-            if not parsed:
-                raise ValueError("calendar returned no matching future releases")
-            successful_sources.add(source_name)
-            releases.extend(parsed)
-        except Exception as exc:
-            errors[source_name] = str(exc)
+
+    try:
+        response = requests.get(
+            settings.bea_schedule_url,
+            headers={"User-Agent": "OdAIly-macro-newsflash/1.0"},
+            timeout=settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        parsed = _parse_release_rows(
+            response.text,
+            source_name="BEA",
+            source_url=settings.bea_schedule_url,
+            needles=("personal income and outlays",),
+            mapping={"personal income and outlays": ("bea_pce", ("pce_yoy",))},
+            now=current,
+        )
+        if not parsed:
+            raise ValueError("calendar returned no matching future releases")
+        successful_sources.add("BEA")
+        releases.extend(parsed)
+    except Exception as exc:
+        errors["BEA"] = str(exc)
+
     try:
         response = requests.get(
             settings.fed_calendar_url,
@@ -105,23 +99,88 @@ def fetch_release_schedule(
         releases.extend(parsed)
     except Exception as exc:
         errors["Federal Reserve"] = str(exc)
+
     try:
         parsed = _fetch_tradingview_calendar(settings, now=current)
-        successful_sources.update({"TradingView · Census Bureau", "TradingView · Department of Labor"})
+        successful_sources.update(TRADINGVIEW_SOURCE_NAMES)
         releases.extend(parsed)
         errors.pop("TradingView", None)
     except Exception as exc:
         errors["TradingView"] = str(exc)
+
     releases.extend(_next_claims_schedule(current))
     successful_sources.add("DOL ETA (estimated weekly schedule)")
+
     unique: dict[str, ScheduledRelease] = {}
     for release in releases:
         existing = unique.get(release.release_id)
         if existing is None or (existing.is_estimate and not release.is_estimate):
             unique[release.release_id] = release
-        elif release.source_name == "Census" and existing.source_name != "Census":
+        elif release.source_name in OFFICIAL_CALENDAR_SOURCES and existing.source_name not in OFFICIAL_CALENDAR_SOURCES:
             unique[release.release_id] = release
     return sorted(unique.values(), key=lambda item: item.scheduled_at), errors, successful_sources
+
+
+def _tradingview_mapping(title: str, source: str) -> tuple[str, tuple[str, ...], str, str, str] | None:
+    normalized_title = re.sub(r"\s+", " ", title).strip().lower()
+    normalized_source = source.lower()
+    if normalized_title in {"non farm payrolls", "unemployment rate"} and (
+        "labour" in normalized_source or "labor" in normalized_source
+    ):
+        return (
+            "bls_employment",
+            ("nonfarm_payrolls", "unemployment_rate"),
+            "TradingView · BLS",
+            "Employment Situation (Nonfarm Payrolls & Unemployment Rate)",
+            "https://www.bls.gov/schedule/news_release/",
+        )
+    if normalized_title in {
+        "inflation rate yoy",
+        "inflation rate mom",
+        "inflation rate mom nsa",
+        "core inflation rate mom",
+        "core inflation rate yoy",
+    } and ("labour" in normalized_source or "labor" in normalized_source):
+        return (
+            "bls_cpi",
+            CPI_METRIC_IDS,
+            "TradingView · BLS",
+            "Consumer Price Index (CPI)",
+            "https://www.bls.gov/schedule/news_release/",
+        )
+    if normalized_title == "retail sales mom" and "census" in normalized_source:
+        return (
+            "census_retail_sales",
+            ("retail_sales_mom",),
+            "TradingView · Census Bureau",
+            title,
+            "https://www.census.gov/economic-indicators/calendar-listview.html",
+        )
+    if normalized_title == "initial jobless claims" and "department of" in normalized_source and "labo" in normalized_source:
+        return (
+            "dol_initial_claims",
+            ("initial_claims",),
+            "TradingView · Department of Labor",
+            title,
+            "https://oui.doleta.gov/unemploy/claims.asp",
+        )
+    if normalized_title == "pce price index yoy" and "bureau of econ" in normalized_source:
+        return (
+            "bea_pce",
+            ("pce_yoy",),
+            "TradingView · BEA",
+            "Personal Income and Outlays (PCE)",
+            "https://www.bea.gov/news/schedule",
+        )
+    if normalized_title == "interest rate" and "federal reserve" in normalized_source:
+        return (
+            "fomc",
+            ("fomc_rate",),
+            "TradingView · Federal Reserve",
+            "FOMC Interest Rate Decision",
+            "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        )
+    return None
 
 
 def _fetch_tradingview_calendar(
@@ -129,11 +188,12 @@ def _fetch_tradingview_calendar(
     *,
     now: datetime,
 ) -> list[ScheduledRelease]:
+    start = now - timedelta(hours=4)
     end = now + timedelta(days=120)
     response = requests.get(
         settings.tradingview_calendar_url,
         params={
-            "from": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "from": start.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "to": end.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "countries": "US",
         },
@@ -150,26 +210,16 @@ def _fetch_tradingview_calendar(
     if payload.get("status") != "ok" or not isinstance(payload.get("result"), list):
         raise ValueError("TradingView calendar returned an unexpected response")
 
-    result: list[ScheduledRelease] = []
+    by_release_id: dict[str, ScheduledRelease] = {}
     for item in payload["result"]:
         if not isinstance(item, dict) or item.get("country") != "US":
             continue
         title = str(item.get("title") or "")
         source = str(item.get("source") or "")
-        normalized_title = re.sub(r"\s+", " ", title).strip().lower()
-        normalized_source = source.lower()
-        if normalized_title == "retail sales mom" and "census" in normalized_source:
-            metric_id = "retail_sales_mom"
-            release_id_prefix = "census_retail_sales"
-            source_name = "TradingView · Census Bureau"
-            fallback_url = "https://www.census.gov/economic-indicators/calendar-listview.html"
-        elif normalized_title == "initial jobless claims" and "department of" in normalized_source and "labour" in normalized_source:
-            metric_id = "initial_claims"
-            release_id_prefix = "dol_initial_claims"
-            source_name = "TradingView · Department of Labor"
-            fallback_url = "https://oui.doleta.gov/unemploy/claims.asp"
-        else:
+        mapped = _tradingview_mapping(title, source)
+        if mapped is None:
             continue
+        release_id_prefix, metric_ids, source_name, display_title, fallback_url = mapped
         try:
             scheduled_at = datetime.fromisoformat(str(item["date"]).replace("Z", "+00:00"))
         except (KeyError, TypeError, ValueError) as exc:
@@ -180,23 +230,23 @@ def _fetch_tradingview_calendar(
         if scheduled_at < now - timedelta(hours=4):
             continue
         event_day = scheduled_at.astimezone(EASTERN_TZ).date().isoformat()
+        release_id = f"{release_id_prefix}:{event_day}"
+        if release_id in by_release_id:
+            continue
         source_url = str(item.get("source_url") or fallback_url)
         if urlparse(source_url).scheme not in {"http", "https"}:
             source_url = fallback_url
-        metric_ids = (metric_id,)
-        result.append(
-            ScheduledRelease(
-                release_id=f"{release_id_prefix}:{event_day}",
-                source_name=source_name,
-                title=title,
-                metric_ids=metric_ids,
-                scheduled_at=scheduled_at.isoformat(timespec="seconds"),
-                source_url=source_url,
-            )
+        by_release_id[release_id] = ScheduledRelease(
+            release_id=release_id,
+            source_name=source_name,
+            title=display_title,
+            metric_ids=metric_ids,
+            scheduled_at=scheduled_at.isoformat(timespec="seconds"),
+            source_url=source_url,
         )
-    if not result:
-        raise ValueError("TradingView calendar returned no matching Census retail sales or DOL claims dates")
-    return result
+    if not by_release_id:
+        raise ValueError("TradingView calendar returned no matching US macro releases")
+    return list(by_release_id.values())
 
 
 def _parse_release_rows(
@@ -275,12 +325,60 @@ def _find_calendar_time(text: str, *, default: wall_time) -> wall_time:
 def _parse_fed_calendar(html: str, source_url: str, *, now: datetime) -> list[ScheduledRelease]:
     soup = BeautifulSoup(html, "html.parser")
     result: list[ScheduledRelease] = []
-    range_pattern = re.compile(rf"\b({MONTH_PATTERN})\.?\s+(\d{{1,2}})\s*[-–]\s*(\d{{1,2}})(?:,?\s*(20\d{{2}}))?", re.IGNORECASE)
+    seen: set[str] = set()
+    range_pattern = re.compile(
+        rf"\b({MONTH_PATTERN})(?:\s*/\s*({MONTH_PATTERN}))?\.?\s+(\d{{1,2}})\s*[-–]\s*(\d{{1,2}})\*?(?:,?\s*(20\d{{2}}))?",
+        re.IGNORECASE,
+    )
+
+    def append_meeting(meeting_day: date) -> None:
+        scheduled_at = datetime.combine(meeting_day, wall_time(14, 0), tzinfo=EASTERN_TZ)
+        if scheduled_at.astimezone(UTC) < now - timedelta(hours=4):
+            return
+        release_id = f"fomc:{meeting_day.isoformat()}"
+        if release_id in seen:
+            return
+        seen.add(release_id)
+        result.append(
+            ScheduledRelease(
+                release_id=release_id,
+                source_name="Federal Reserve",
+                title=f"FOMC meeting statement expected {meeting_day.isoformat()}",
+                metric_ids=("fomc_rate",),
+                scheduled_at=scheduled_at.astimezone(UTC).isoformat(timespec="seconds"),
+                source_url=source_url,
+            )
+        )
+
+    for panel in soup.select("div.panel"):
+        heading = panel.select_one(".panel-heading")
+        heading_text = re.sub(r"\s+", " ", heading.get_text(" ", strip=True)) if heading else ""
+        year_match = re.search(r"\b(20\d{2})\b", heading_text)
+        if not year_match:
+            continue
+        panel_year = int(year_match.group(1))
+        for row in panel.select("div.fomc-meeting"):
+            date_node = row.select_one("div.fomc-meeting__date") or row
+            date_text = re.sub(r"\s+", " ", date_node.get_text(" ", strip=True))
+            month_node = row.select_one("div.fomc-meeting__month")
+            if month_node is not None and not re.search(MONTH_PATTERN, date_text, re.IGNORECASE):
+                date_text = f"{re.sub(r'\s+', ' ', month_node.get_text(' ', strip=True))} {date_text}"
+            match = range_pattern.search(date_text)
+            if not match:
+                continue
+            month_name = match.group(2) or match.group(1)
+            month = MONTHS[month_name.lower()]
+            year = int(match.group(5)) if match.group(5) else panel_year
+            append_meeting(date(year, month, int(match.group(4))))
+
+    if result:
+        return result
+
     for table in soup.find_all("table"):
         text = re.sub(r"\s+", " ", table.get_text(" ", strip=True))
         year_matches = list(re.finditer(r"\b(20\d{2})\b", text))
         for match in range_pattern.finditer(text):
-            year_text = match.group(4)
+            year_text = match.group(5)
             if year_text:
                 year = int(year_text)
             else:
@@ -288,21 +386,9 @@ def _parse_fed_calendar(html: str, source_url: str, *, now: datetime) -> list[Sc
                 if not nearby:
                     continue
                 year = int(min(nearby, key=lambda item: abs(item.start() - match.start())).group(1))
-            month = MONTHS[match.group(1).lower()]
-            meeting_day = date(year, month, int(match.group(3)))
-            scheduled_at = datetime.combine(meeting_day, wall_time(14, 0), tzinfo=EASTERN_TZ)
-            if scheduled_at.astimezone(UTC) < now - timedelta(hours=4):
-                continue
-            result.append(
-                ScheduledRelease(
-                    release_id=f"fomc:{meeting_day.isoformat()}",
-                    source_name="Federal Reserve",
-                    title=f"FOMC meeting statement expected {meeting_day.isoformat()}",
-                    metric_ids=("fomc_rate",),
-                    scheduled_at=scheduled_at.astimezone(UTC).isoformat(timespec="seconds"),
-                    source_url=source_url,
-                )
-            )
+            month_name = match.group(2) or match.group(1)
+            month = MONTHS[month_name.lower()]
+            append_meeting(date(year, month, int(match.group(4))))
     return result
 
 
