@@ -8,6 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from packages.common.config import load_x_processing_settings
@@ -19,8 +20,10 @@ from .store import NewsStore, create_news_store, encode
 
 REVIEW_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_MODEL = "gpt-6-luna"
-PROMPT_VERSION = "address-highlight-v2"
+PROMPT_VERSION = "address-highlight-v3"
 POSITION_MAX_AGE_MS = 24 * 60 * 60 * 1000
+TOP_DUMB_MONEY_LOSS_USD = Decimal("10000000")
+TOP_DUMB_MONEY_MODEL = "rule:account_loss_10m"
 NAMING_SCHEMA = {
     "type": "json_schema", "name": "hyperliquid_address_name",
     "schema": {
@@ -280,6 +283,43 @@ def create_naming_store(path=None):
     return NamingStore(selected_path)
 
 
+def _official_sample_sort_key(perf: dict[str, Any]) -> tuple[int, int, int]:
+    all_time = (perf.get("windows") or {}).get("allTime")
+    has_all_time = 1 if isinstance(all_time, dict) and all_time.get("pnl") is not None else 0
+    stamp = 0
+    if has_all_time:
+        stamp = int(all_time.get("observed_ms") or all_time.get("history_sample_ms") or perf.get("fetched_ms") or 0)
+    else:
+        for window in (perf.get("windows") or {}).values():
+            if isinstance(window, dict):
+                stamp = max(stamp, int(window.get("observed_ms") or window.get("history_sample_ms") or perf.get("fetched_ms") or 0))
+    source = str(perf.get("source") or "")
+    source_priority = 2 if source in ("hyperliquid_portfolio", "hyperliquid_perpetual_portfolio") else 1 if source else 0
+    return (has_all_time, stamp, source_priority)
+
+
+def _official_account_performance(store: NewsStore, address: str, account_history: dict[str, Any], normal_history: dict[str, Any]) -> tuple[dict[str, Any] | None, int | None]:
+    candidates = [
+        item
+        for item in (
+            account_history.get("official_account_performance"),
+            account_history.get("official_account_loss"),
+            normal_history.get("official_account_performance"),
+            normal_history.get("official_account_loss"),
+            store.metadata("account_performance:" + address, {}),
+        )
+        if isinstance(item, dict) and item
+    ]
+    if not candidates:
+        return None, None
+    official = max(candidates, key=_official_sample_sort_key)
+    all_time = (official.get("windows") or {}).get("allTime")
+    observed_ms = (all_time.get("observed_ms") or all_time.get("history_sample_ms")) if isinstance(all_time, dict) else None
+    if observed_ms is None:
+        observed_ms = official.get("fetched_ms")
+    return official, int(observed_ms) if observed_ms is not None else None
+
+
 def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, Any]:
     address = address_key(address)
     profile: dict[str, Any] = {"address": address, "as_of_ms": now_ms, "dimensions": {}}
@@ -306,8 +346,7 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
     assets = normal_history.get("assets") or {}
     compact_assets = {coin: {key: asset.get(key) for key in ("rounds", "wins", "win_rate", "closed_pnl_less_fees", "first_observed_fill_ms", "last_observed_fill_ms", "position_discontinuities", "ambiguous_order_fills", "unsupported_fee_currency")}
                       for coin, asset in assets.items() if isinstance(asset, dict)}
-    official = (account_history.get("official_account_performance") or normal_history.get("official_account_performance") or
-                account_history.get("official_account_loss") or normal_history.get("official_account_loss"))
+    official, official_observed_ms = _official_account_performance(store, address, account_history, normal_history)
     round_assets = {coin: a for coin, a in compact_assets.items() if (a.get("rounds") or 0) > 0 and a.get("win_rate") is not None}
     dimensions = [
         {"evidence_id": "asset_profit", "key": "asset_profit", "label": "单资产已实现盈亏", "available": bool(compact_assets),
@@ -323,7 +362,7 @@ def build_profile(store: NewsStore, address: str, *, now_ms: int) -> dict[str, A
         {"evidence_id": "current_positions", "key": "current_positions", "label": "当前持仓与方向", "available": position_fresh,
          "data": positions, "observed_ms": position_ms, "missing": None if position_fresh else "无一天内的持仓快照"},
         {"evidence_id": "account_performance", "key": "account_performance", "label": "账户周期盈亏", "available": bool(official),
-         "data": official or {}, "observed_ms": account.get("state", {}).get("account_history_checked_ms") or normal.get("state", {}).get("history_last_queried_ms"),
+         "data": official or {}, "observed_ms": official_observed_ms or account.get("state", {}).get("account_history_checked_ms") or normal.get("state", {}).get("history_last_queried_ms"),
          "missing": None if official else "无官方账户周期 PnL 样本"},
     ]
     if getattr(store, "backend", "sqlite") == "postgres":
@@ -472,6 +511,7 @@ def _prompt(profile: dict[str, Any]) -> str:
             "数据证据不足或无法证明稳定特长时使用安全中性称谓，不补造能力。"
             "自然称谓示例：近期SOL高胜率巨鲸、BTC爆赚交易员、原油大多头、ETH大空头。不要写‘短窗’、‘偏科’、‘累计收益突出’、‘高额账户盈利’等生硬数据摘要；若只有官方账户历史收益突出，可写历史高盈利巨鲸。只有唯一显著特点是负面结果时才可选负面称谓。"
             "‘稳定特长’指具体资产的盈利能力、可靠胜率或有证据的交易风格；账户总收益高只是泛化结果，不能因其看似稳定就压过更鲜明的资产大仓。优先具体资产亮点，只有没有更具体特点才用历史高盈利巨鲸。"
+            "若官方账户累计（allTime）总亏损超过1000万美元，直接命名为‘顶级笨蛋钱’（kind=stable，selected_dimension=account_performance）；若累计亏损未超过1000万美元，不得沿用‘顶级笨蛋钱’。"
             "名字采用资产加特长再加巨鲸或交易员，或者资产加大多头/大空头等自然称呼。避免‘兑现者’‘兑现能力’‘交易稳健’‘持仓多头’‘盈利账户’；显著的已实现盈利可用‘ZEC爆赚交易员’，不是‘近期大额兑现者’。美股SP500称标普500，NVDA称英伟达，原始合约不合并。"
             "previous_name若仍成立且没有更突出的新亮点，延续原称谓（去掉地址后缀后返回）。过期旧名不可复用。任何大多头、大空头、重仓多空等当前方向称谓必须kind=position，不能标stable绕过失效检查；没有亮点时用普通地址。"
             "原名如果是上面要求避免的泛化或生硬表达，应改成更自然且具体的称谓，不能以延续旧名为理由保留。"
@@ -503,6 +543,33 @@ def parse_result(text: str, address: str) -> dict[str, Any]:
     return {"name": name,
             "kind": kind, "coin": coin, "side": side, "reason": str(data.get("reason") or "证据不足，使用普通称谓")[:240],
             "selected_dimension": selected, "evidence_refs": refs}
+
+
+def _official_all_time_pnl(profile: dict[str, Any]) -> Decimal | None:
+    dimension = next((item for item in profile.get("dimensions", []) if item.get("evidence_id") == "account_performance"), None)
+    if not dimension or not dimension.get("available"):
+        return None
+    all_time = ((dimension.get("data") or {}).get("windows") or {}).get("allTime")
+    if not isinstance(all_time, dict) or all_time.get("pnl") is None:
+        return None
+    return Decimal(str(all_time["pnl"]))
+
+
+def _rule_based_name(profile: dict[str, Any], address: str) -> dict[str, Any] | None:
+    pnl = _official_all_time_pnl(profile)
+    if pnl is not None and pnl < -TOP_DUMB_MONEY_LOSS_USD:
+        loss_wan = int((abs(pnl) / Decimal("10000")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        return {
+            "name": f"顶级笨蛋钱{address[:4].lower()}",
+            "kind": "stable",
+            "coin": None,
+            "side": None,
+            "reason": f"官方账户累计亏损约{loss_wan:,}万美元，超过1000万美元门槛，按规则直接标注为顶级笨蛋钱",
+            "selected_dimension": "account_performance",
+            "evidence_refs": ["account_performance"],
+            "_model": TOP_DUMB_MONEY_MODEL,
+        }
+    return None
 
 
 @dataclass
@@ -552,14 +619,20 @@ class NamingWorker:
             if not self.naming_store.renew_claim(address, token=row["claim_token"], now_ms=item_ms):
                 return {"address": address, "saved": False}
             profile = build_profile(self.store, address, now_ms=item_ms)
-            if not any(item.get("available") for item in profile["dimensions"] if item["key"] != "address_prefix"):
+            rule_result = _rule_based_name(profile, address)
+            if rule_result is not None:
+                result_model = str(rule_result.pop("_model", self.model))
+                result = rule_result
+            elif not any(item.get("available") for item in profile["dimensions"] if item["key"] != "address_prefix"):
+                result_model = self.model
                 result = {"name": fallback_name(address), "kind": "stable", "reason": "暂无可用状态，使用普通称谓",
                     "selected_dimension": "address_prefix", "evidence_refs": ["address_prefix"]}
             else:
+                result_model = self.model
                 result = self._choose(profile, address)
             result["coverage"] = {"dimensions": profile["dimensions"], "prompt_version": PROMPT_VERSION}
             saved = self.naming_store.save_result(address, token=row["claim_token"], result=result,
-                now_ms=fixed_ms if fixed_ms is not None else _now(), model=self.model)
+                now_ms=fixed_ms if fixed_ms is not None else _now(), model=result_model)
             return {"address": address, "saved": saved}
         except Exception as exc:
             self.naming_store.save_result(address, token=row["claim_token"], result={},

@@ -321,3 +321,107 @@ def test_manual_note_completely_replaces_existing_ai_name_and_clears_details(tmp
     assert "2026 年 11 月 24 日 23:08 至 23:12，AguilaTrades开立" in final.content
     assert "胜率" not in final.content
     assert "某地址" not in final.title and "某地址" not in final.content
+
+
+def test_total_loss_over_10m_names_top_dumb_money_directly_and_formats_liquidation_copy(tmp_path):
+    store, names = setup(tmp_path)
+    C = "0x9999567890abcdef1234567890abcdef12345678"
+    store.discover(C, source={"kind": "test"}, now_ms=T, limit=None)
+    names.initialize()
+    names.set_manual(C, "自定义锁定名称", updated_by="editor@example.com")
+
+    # Address A: -16.7M in account_performance metadata (between 10M and 20M, no hl_news_state row).
+    store.save_global(
+        "account_performance:" + A,
+        {
+            "source": "hyperliquid_portfolio",
+            "fetched_ms": T,
+            "windows": {"allTime": {"pnl": "-16707753.59", "observed_ms": T - 1000}},
+        },
+        [],
+    )
+    # Address B: exactly -10M does not exceed 10M, so it still goes to AI.
+    store.save_global(
+        "account_performance:" + B,
+        {
+            "source": "hyperliquid_portfolio",
+            "fetched_ms": T,
+            "windows": {"allTime": {"pnl": "-10000000", "observed_ms": T - 1000}},
+        },
+        [],
+    )
+    # Address C: manual locked with -25M must never be overwritten.
+    store.save_global(
+        "account_performance:" + C,
+        {
+            "source": "hyperliquid_portfolio",
+            "fetched_ms": T,
+            "windows": {"allTime": {"pnl": "-25000000", "observed_ms": T - 1000}},
+        },
+        [],
+    )
+
+    ai_calls = []
+
+    class Client:
+        def generate_text(self, *, model, prompt, text_format, reasoning_effort):
+            ai_calls.append(prompt)
+            assert "顶级笨蛋钱" in prompt
+            return json.dumps(
+                {
+                    "name": "普通地址",
+                    "kind": "stable",
+                    "coin": None,
+                    "side": None,
+                    "reason": "未超过1000万美元门槛，交由模型判断",
+                    "selected_dimension": "address_prefix",
+                    "evidence_refs": ["address_prefix"],
+                },
+                ensure_ascii=False,
+            )
+
+    report = NamingWorker(store, names, ai_client=Client(), batch_size=4).run_once(now_ms=T)
+    assert report["saved"] == 2
+    assert len(ai_calls) == 1
+
+    row_a = names.get(A)
+    assert row_a["current_name"] == "顶级笨蛋钱0x12"
+    assert row_a["kind"] == "stable"
+    assert row_a["evidence"]["selected_dimension"] == "account_performance"
+    assert row_a["model"] == "rule:account_loss_10m"
+    assert names.get(B)["current_name"] == "普通地址0xab"
+    assert names.get(C)["current_name"] == "自定义锁定名称"
+
+    event = store.with_address_notes(
+        {
+            "addresses": [A],
+            "coin": "xyz:CRCL",
+            "kinds": ["near_liquidation"],
+            "observed_ms": T + 1000,
+            "evidence": {
+                "position": {"size": "114256.702", "notional": "5403313.69", "unrealized_pnl": "-2922599.77"},
+                "liquidation_distance": "0.185",
+                "history": {},
+            },
+        }
+    )
+    final = format_news(
+        DraftBrief(
+            title="CRCL多单距清算价约19%，某地址持仓价值约540万美元",
+            content="某地址持有的 CRCL 多单当前距清算价约19%，清算价约38.54美元，价格下跌将接近清算。其持仓价值约540万美元，浮亏约292万美元。",
+        ),
+        event,
+    )
+    assert final.title == "距清算价约19%，顶级笨蛋钱0x12持仓价值约540万美元CRCL多单，浮亏约292万美元"
+    assert "据Odaily监测，顶级笨蛋钱0x12持有的 CRCL 多单" in final.content
+    assert "某地址" not in final.title and "某地址" not in final.content
+
+
+def test_discover_and_manual_add_immediately_insert_into_naming_table(tmp_path):
+    store = NewsStore(tmp_path / "sync.sqlite")
+    store.initialize()
+    assert store.discover(A, source={"kind": "leaderboard"}, now_ms=T, limit=None)
+    assert store.add_manual_address(B, now_ms=T, updated_by="op@example.com")["created"] is True
+    names = NamingStore(store.path)
+    assert names.get(A) is not None and names.get(A)["checked_ms"] == 0
+    assert names.get(B) is not None and names.get(B)["checked_ms"] == 0

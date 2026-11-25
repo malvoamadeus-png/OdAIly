@@ -416,3 +416,36 @@ def test_postgres_dashboard_test_dataset_reads_coin_from_payload():
     queries = [q for q in executed if "FROM hl_news_test_cases c" in q and "COALESCE(c.payload->>'coin'" in q]
     assert len(queries) == 1
     assert "c.coin" not in queries[0]
+
+
+def test_postgres_discover_manual_add_and_claim_due_sync_naming_table():
+    executed: list[str] = []
+
+    class FakeResult:
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class FakeConn:
+        def execute(self, sql, params=()):
+            executed.append(" ".join(sql.split()))
+            return FakeResult()
+
+    store = PostgresNewsStore.__new__(PostgresNewsStore)
+
+    @contextmanager
+    def fake_connect(*, autocommit: bool = False):
+        yield FakeConn()
+
+    store._connect = fake_connect
+    store.blocked = lambda address, conn=None: False
+    store.schedule_account = lambda address, now_ms=0: None
+
+    assert store.discover("0x64b766b07362405a9cc19c2226490f3015929da9", source={"kind": "leaderboard"}, now_ms=1000, limit=None)
+    store.add_manual_address("0x8ea85cbd59affca28162fc286d5c093dd0f8edbc", now_ms=1000, updated_by="op@example.com")
+    PostgresNamingStore(store).claim_due(now_ms=1000, limit=4)
+
+    assert sum("INSERT INTO hl_news_address_names(address) VALUES(%s) ON CONFLICT(address) DO NOTHING" in sql for sql in executed) == 2
+    assert any("INSERT INTO hl_news_address_names(address) SELECT a.address FROM hl_news_addresses a WHERE NOT EXISTS" in sql for sql in executed)

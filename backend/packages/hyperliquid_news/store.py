@@ -213,6 +213,8 @@ class NewsStore:
             conn.execute('''INSERT INTO hl_news_addresses(address,first_seen_ms,last_seen_ms,sources)
                 VALUES(?,?,?,?) ON CONFLICT(address) DO UPDATE SET last_seen_ms=excluded.last_seen_ms,sources=excluded.sources''',
                          (address, now_ms, now_ms, encode(sources)))
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hl_news_address_names'").fetchone():
+                conn.execute('INSERT OR IGNORE INTO hl_news_address_names(address) VALUES(?)', (address,))
         return True
 
     def add_manual_address(self, address: str, *, now_ms: int, updated_by: str) -> dict[str, Any]:
@@ -235,6 +237,8 @@ class NewsStore:
                 VALUES(?,?,?,?) ON CONFLICT(address) DO UPDATE SET
                 last_seen_ms=max(hl_news_addresses.last_seen_ms,excluded.last_seen_ms),sources=excluded.sources''',
                          (address, now_ms, now_ms, encode(sources)))
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hl_news_address_names'").fetchone():
+                conn.execute('INSERT OR IGNORE INTO hl_news_address_names(address) VALUES(?)', (address,))
         self.schedule_account(address, now_ms=now_ms)
         return {'address': address, 'created': created, 'already_manual': has_manual_source}
 

@@ -184,6 +184,7 @@ class PostgresNewsStore:
                 sources.append(source)
             conn.execute("INSERT INTO hl_news_addresses(address,first_seen_ms,last_seen_ms,sources) VALUES(%s,%s,%s,%s) ON CONFLICT(address) DO UPDATE SET last_seen_ms=excluded.last_seen_ms,sources=excluded.sources",
                          (address, now_ms, now_ms, json.dumps(sources, ensure_ascii=False)))
+            conn.execute("INSERT INTO hl_news_address_names(address) VALUES(%s) ON CONFLICT(address) DO NOTHING", (address,))
         return True
 
     def add_manual_address(self, address: str, *, now_ms: int, updated_by: str) -> dict[str, Any]:
@@ -202,6 +203,7 @@ class PostgresNewsStore:
                 sources.append(source)
             conn.execute("INSERT INTO hl_news_addresses(address,first_seen_ms,last_seen_ms,sources) VALUES(%s,%s,%s,%s) ON CONFLICT(address) DO UPDATE SET last_seen_ms=GREATEST(hl_news_addresses.last_seen_ms,excluded.last_seen_ms),sources=excluded.sources",
                          (address, now_ms, now_ms, json.dumps(sources, ensure_ascii=False)))
+            conn.execute("INSERT INTO hl_news_address_names(address) VALUES(%s) ON CONFLICT(address) DO NOTHING", (address,))
         self.schedule_account(address, now_ms=now_ms)
         return {"address": address, "created": row is None, "already_manual": already}
 
@@ -664,7 +666,7 @@ class PostgresNewsStore:
             if blocked:
                 conn.execute("UPDATE hl_news_address_names SET status='blocked',current_name=NULL,inflight_token=NULL,inflight_started_ms=NULL WHERE address=%s AND manual_locked=false", (address,))
             elif was_blocked:
-                conn.execute("UPDATE hl_news_address_names SET status='expired',next_check_ms=%s,current_name=NULL WHERE address=%s AND manual_locked=false", (now_ms, address))
+                conn.execute("INSERT INTO hl_news_address_names(address,status,next_check_ms,current_name) VALUES(%s,'expired',%s,NULL) ON CONFLICT(address) DO UPDATE SET status='expired',next_check_ms=excluded.next_check_ms,current_name=NULL WHERE hl_news_address_names.manual_locked=false", (address, now_ms))
         return value
 
     def commit_observation(self, *, address: str, now_ms: int, state: dict[str, Any], history: dict[str, Any], coverage: dict[str, Any], fills: list[dict[str, Any]], candidates: list[Candidate], state_table: str = "hl_news_state", check_compact_boundary: bool = False, expected_compact_through: int | None = None) -> None:

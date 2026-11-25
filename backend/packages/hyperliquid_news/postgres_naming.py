@@ -64,10 +64,24 @@ class PostgresNamingStore:
             name=feature+address[:length]
         return name
 
+    def sync_missing_addresses(self) -> None:
+        with self._connect() as conn:
+            self._sync_missing_addresses_in_tx(conn)
+
+    @staticmethod
+    def _sync_missing_addresses_in_tx(conn) -> None:
+        conn.execute(
+            """INSERT INTO hl_news_address_names(address)
+            SELECT a.address FROM hl_news_addresses a
+            WHERE NOT EXISTS (SELECT 1 FROM hl_news_address_names n WHERE n.address=a.address)
+            ON CONFLICT(address) DO NOTHING"""
+        )
+
     def claim_due(self, *, now_ms: int, limit: int=100) -> list[dict[str,Any]]:
         token=uuid.uuid4().hex
         blocked=address_not_blocked_sql("n.address")
         with self._connect() as conn:
+            self._sync_missing_addresses_in_tx(conn)
             conn.execute("UPDATE hl_news_address_names SET inflight_token=NULL,inflight_started_ms=NULL WHERE inflight_started_ms IS NOT NULL AND inflight_started_ms<%s",(now_ms-3600000,))
             rows=conn.execute(f"""SELECT n.* FROM hl_news_address_names n JOIN hl_news_addresses a USING(address)
                 WHERE n.manual_locked=false AND n.status<>'blocked' AND n.inflight_token IS NULL AND n.next_check_ms<=%s AND n.retry_after_ms<=%s
