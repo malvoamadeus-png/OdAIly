@@ -4,7 +4,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -217,11 +217,13 @@ class StockThemeClassifier:
         verified_symbols = {
             str(item["symbol"]) for item in inputs if item["knowledge_verified"]
         }
+        median_pct = _median_floor_percent(members)
 
         prompt = self._prompt(
             inputs,
             direction=direction,
             broad=broad,
+            median_pct=median_pct,
             fallback_title=fallback_title,
         )
         try:
@@ -243,6 +245,7 @@ class StockThemeClassifier:
             moves=moves,
             direction=direction,
             broad=broad,
+            median_pct=median_pct,
             fallback_title=fallback_title,
         )
         if generated is None:
@@ -255,6 +258,7 @@ class StockThemeClassifier:
         *,
         direction: Direction,
         broad: bool,
+        median_pct: int,
         fallback_title: str,
     ) -> str:
         movement = "上涨" if direction == "up" else "下跌"
@@ -277,12 +281,12 @@ class StockThemeClassifier:
             "不允许使用“合约”“相关”，不写1小时或24小时。标题只能严格使用以下形式："
             f"单类且广度达标：{{概念}}概念美股{broad_word}；"
             f"单类且广度未达标：{{概念}}概念美股{narrow_word}；"
-            f"多类且广度达标：美股多类股票{broad_word}，包括{{概念1}}概念、{{概念2}}概念；"
+            f"多类且广度达标：美股多类股票{broad_word}超{median_pct}%，包括{{概念1}}概念、{{概念2}}概念；"
             f"多类且广度未达标：美股多类股票{narrow_word}，包括{{概念1}}概念、{{概念2}}概念。"
             "多类标题最多列3类，按组内标的数量从多到少，再按组内平均绝对涨幅从大到小。"
             "concepts必须给出标题所列概念，并逐一列出组内代码及该代码的confidence；"
             "unclassified_symbols列出所有未核实或置信度低于0.8的代码。"
-            "标题必须与concepts的数量、排序、方向和广度状态完全一致。只返回约定JSON，不要解释。\n"
+            "标题必须与concepts的数量、排序、方向、广度状态及给定幅度完全一致。只返回约定JSON，不要解释。\n"
             f"独立标的兜底标题：{fallback_title}\n"
             f"标的资料：{json.dumps(inputs, ensure_ascii=False, separators=(',', ':'))}"
         )
@@ -308,6 +312,7 @@ class StockThemeClassifier:
         moves: dict[str, Decimal],
         direction: Direction,
         broad: bool,
+        median_pct: int,
         fallback_title: str,
     ) -> tuple[HeadlineGeneration | None, str | None]:
         try:
@@ -406,17 +411,15 @@ class StockThemeClassifier:
                 "no_repeated_concept",
             ), "no_repeated_concept"
 
+        trend = ("普涨" if direction == "up" else "普跌") if broad else (
+            "上涨" if direction == "up" else "下跌"
+        )
         if len(concepts) == 1:
-            trend = ("普涨" if direction == "up" else "普跌") if broad else (
-                "上涨" if direction == "up" else "下跌"
-            )
             expected_title = f"{concepts[0].label}概念美股{trend}"
         else:
-            trend = ("普涨" if direction == "up" else "普跌") if broad else (
-                "上涨" if direction == "up" else "下跌"
-            )
             labels = "、".join(f"{concept.label}概念" for concept in concepts)
-            expected_title = f"美股多类股票{trend}，包括{labels}"
+            prefix = f"美股多类股票{trend}超{median_pct}%" if broad else f"美股多类股票{trend}"
+            expected_title = f"{prefix}，包括{labels}"
 
         if (
             title.strip() != title
@@ -432,3 +435,10 @@ class StockThemeClassifier:
             ), "title_validation_failed"
 
         return HeadlineGeneration(title, tuple(concepts), remaining), None
+
+
+def _median_floor_percent(members: tuple[AlertMember, ...]) -> int:
+    """Return the floored integer magnitude of the alert members' lower median move."""
+    magnitudes = sorted(abs(member.change_pct) for member in members)
+    middle = magnitudes[(len(magnitudes) - 1) // 2]
+    return int(middle.to_integral_value(rounding=ROUND_FLOOR))

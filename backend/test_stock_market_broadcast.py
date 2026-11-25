@@ -341,20 +341,22 @@ def test_three_concepts_are_allowed_and_four_are_rejected() -> None:
         {"label": "芯片设计", "members": [{"symbol": "AMD", "confidence": 0.9}]},
     ]
     valid_response = json.dumps({
-        "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
+        "title": "美股多类股票普涨超7%，包括消费电子概念、半导体设备概念、芯片设计概念",
         "concepts": concepts,
         "unclassified_symbols": ["CRM"],
     })
+    valid_client = _FakeTextGenerationClient(valid_response)
     valid = StockThemeClassifier(
-        client=_FakeTextGenerationClient(valid_response), model="test-model",
+        client=valid_client, model="test-model",
     ).generate_title(
         members=members, direction="up", broad=True,
         fallback_title="多只美股上涨，AAPL上涨9%、GOOGL上涨8%",
     )
-    assert valid.title == "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念"
+    assert valid.title == "美股多类股票普涨超7%，包括消费电子概念、半导体设备概念、芯片设计概念"
+    assert "美股多类股票普涨超7%，包括{概念1}概念、{概念2}概念" in str(valid_client.calls[0]["prompt"])
 
     invalid_response = json.dumps({
-        "title": "美股多类股票普涨，包括消费电子概念、半导体设备概念、芯片设计概念",
+        "title": "美股多类股票普涨超7%，包括消费电子概念、半导体设备概念、芯片设计概念",
         "concepts": concepts + [{"label": "云软件", "members": [{"symbol": "CRM", "confidence": 0.9}]}],
         "unclassified_symbols": [],
     })
@@ -366,6 +368,100 @@ def test_three_concepts_are_allowed_and_four_are_rejected() -> None:
     )
     assert invalid.title == "多只美股上涨，AAPL上涨9%、GOOGL上涨8%"
     assert invalid.fallback_reason == "invalid_response"
+
+
+def test_broad_multi_concept_headline_uses_floored_lower_median() -> None:
+    five_members = (
+        _member("PENG", "-11.561"), _member("CIEN", "-11.116"),
+        _member("AMD", "-11.060"), _member("RUM", "-10.876"), _member("ONDS", "-5.030"),
+    )
+    five_response = json.dumps({
+        "title": "美股多类股票普跌超11%，包括AI算力概念、光通信概念、视频平台概念",
+        "concepts": [
+            {"label": "AI算力", "members": [
+                {"symbol": "PENG", "confidence": 0.94},
+                {"symbol": "AMD", "confidence": 0.94},
+            ]},
+            {"label": "光通信", "members": [{"symbol": "CIEN", "confidence": 0.92}]},
+            {"label": "视频平台", "members": [{"symbol": "RUM", "confidence": 0.91}]},
+        ],
+        "unclassified_symbols": ["ONDS"],
+    })
+    odd_result = StockThemeClassifier(
+        client=_FakeTextGenerationClient(five_response), model="test-model",
+    ).generate_title(
+        members=five_members, direction="down", broad=True,
+        fallback_title="多只美股下跌，PENG下跌12%、CIEN下跌11%",
+    )
+    assert odd_result.title == "美股多类股票普跌超11%，包括AI算力概念、光通信概念、视频平台概念"
+
+    three_concepts = [
+        {"label": "AI算力", "members": [
+            {"symbol": "AMD", "confidence": 0.95},
+            {"symbol": "PENG", "confidence": 0.95},
+        ]},
+        {"label": "光通信", "members": [{"symbol": "CIEN", "confidence": 0.95}]},
+    ]
+    four_concepts = [
+        {"label": "半导体", "members": [
+            {"symbol": "NVDA", "confidence": 0.95},
+            {"symbol": "AMD", "confidence": 0.95},
+        ]},
+        {"label": "光通信", "members": [
+            {"symbol": "CIEN", "confidence": 0.95},
+            {"symbol": "LITE", "confidence": 0.95},
+        ]},
+    ]
+    cases = [
+        # (changes_by_symbol, direction, concepts_payload, expected_title)
+        (
+            [("AMD", "5"), ("PENG", "1"), ("CIEN", "3")],
+            "up", three_concepts, "美股多类股票普涨超3%，包括AI算力概念、光通信概念",
+        ),
+        (
+            [("AMD", "-8.2"), ("PENG", "-5.6"), ("CIEN", "-5.1")],
+            "down", three_concepts, "美股多类股票普跌超5%，包括AI算力概念、光通信概念",
+        ),
+        (
+            [("NVDA", "4"), ("AMD", "2"), ("CIEN", "3"), ("LITE", "1")],
+            "up", four_concepts, "美股多类股票普涨超2%，包括半导体概念、光通信概念",
+        ),
+        (
+            [("NVDA", "9.8"), ("AMD", "8.4"), ("CIEN", "6.5"), ("LITE", "2.5")],
+            "up", four_concepts, "美股多类股票普涨超6%，包括半导体概念、光通信概念",
+        ),
+        (
+            [("NVDA", "-9.8"), ("AMD", "-8.4"), ("CIEN", "-6.5"), ("LITE", "-2.5")],
+            "down", four_concepts, "美股多类股票普跌超6%，包括半导体概念、光通信概念",
+        ),
+    ]
+    for pairs, direction, concept_groups, expected_title in cases:
+        members = tuple(_member(symbol, pct) for symbol, pct in pairs)
+        response = json.dumps({
+            "title": expected_title,
+            "concepts": concept_groups,
+            "unclassified_symbols": [],
+        })
+        result = StockThemeClassifier(
+            client=_FakeTextGenerationClient(response), model="test-model",
+        ).generate_title(
+            members=members, direction=direction, broad=True, fallback_title="兜底标题",
+        )
+        assert result.title == expected_title
+
+    wrong_pct = StockThemeClassifier(
+        client=_FakeTextGenerationClient(json.dumps({
+            "title": "美股多类股票普跌超7%，包括半导体概念、光通信概念",
+            "concepts": four_concepts,
+            "unclassified_symbols": [],
+        })),
+        model="test-model",
+    ).generate_title(
+        members=tuple(_member(s, p) for s, p in [("NVDA", "-9.8"), ("AMD", "-8.4"), ("CIEN", "-6.5"), ("LITE", "-2.5")]),
+        direction="down", broad=True, fallback_title="多只美股下跌，NVDA下跌10%、AMD下跌8%",
+    )
+    assert wrong_pct.title == "多只美股下跌，NVDA下跌10%、AMD下跌8%"
+    assert wrong_pct.fallback_reason == "title_validation_failed"
 
 
 def test_low_confidence_members_are_excluded_from_concept_coverage() -> None:
