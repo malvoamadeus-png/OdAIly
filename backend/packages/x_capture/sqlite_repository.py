@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ from packages.common.storage import connect_sqlite
 from .client import normalize_username
 from .models import CaptureRecord, CaptureRunStats, XCaptureAccount, XCaptureSettings
 from .naming import choose_effective_author_name, normalize_lookup_username, normalize_write_name
-from .repository import UNSET, _Unset
+from .repository import UNSET, _Unset, evaluate_attempt_sample
 
 
 def _now() -> datetime:
@@ -64,6 +66,8 @@ def _account(row: Any) -> XCaptureAccount:
 class SQLiteXCaptureRepository:
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._noop_cache_lock = threading.Lock()
+        self._noop_sample_cache: dict[int, tuple[datetime, str]] = {}
         self.init_schema()
 
     def _connect(self):
@@ -356,6 +360,14 @@ class SQLiteXCaptureRepository:
             rows = conn.execute(f"SELECT tweet_id FROM x_seen_tweets WHERE tweet_id IN ({placeholders})", tweet_ids).fetchall()
         return set(tweet_ids) - {str(row["tweet_id"]) for row in rows}
 
+    def list_recent_seen_tweet_ids(self, *, limit: int = 50_000) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT tweet_id FROM x_seen_tweets ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [str(row["tweet_id"]) for row in rows]
+
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None:
         effective_author_name = choose_effective_author_name(
             write_name=account.write_name,
@@ -416,31 +428,32 @@ class SQLiteXCaptureRepository:
             return int(cursor.lastrowid)
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
-        metadata = dict(stats.metadata)
-        fingerprint = x_capture_attempt_fingerprint(
-            status=stats.status,
-            candidate_count=stats.candidate_count,
-            seeded_count=stats.seeded_count,
-            new_count=stats.new_count,
-            saved_count=stats.saved_count,
-            error=stats.error,
-            metadata=metadata,
-        )
-        cutoff = (finished_at - NOOP_SUCCESS_WINDOW).isoformat()
+        self.record_attempts_batch([(stats, started_at, finished_at)])
+
+    def record_attempts_batch(self, items: Sequence[tuple[CaptureRunStats, datetime, datetime]]) -> None:
+        if not items:
+            return
+        with self._noop_cache_lock:
+            working_cache = dict(self._noop_sample_cache)
+        pending_cache_updates: dict[int, tuple[datetime, str]] = {}
+        account_updates: dict[int, tuple[str, str, str, str, str | None, str, int]] = {}
         with self._connect() as conn:
-            previous_row = conn.execute(
-                """
-                SELECT finished_at,metadata FROM x_capture_attempts
-                WHERE account_id=? AND status='success' AND new_count=0 AND saved_count=0 AND finished_at>=?
-                ORDER BY finished_at DESC,id DESC LIMIT 1
-                """,
-                (stats.account.id, cutoff),
-            ).fetchone()
-            previous = dict(previous_row) if previous_row else None
-            previous_metadata = _json(previous["metadata"]) if previous else {}
-            previous_fingerprint = None
-            if previous:
-                previous_fingerprint = x_capture_attempt_fingerprint(
+            now_iso = _now().isoformat()
+
+            def fetch_previous(account_id: int, cutoff_dt: datetime) -> tuple[datetime | None, str | None]:
+                previous_row = conn.execute(
+                    """
+                    SELECT finished_at,metadata FROM x_capture_attempts
+                    WHERE account_id=? AND status='success' AND new_count=0 AND saved_count=0 AND finished_at>=?
+                    ORDER BY finished_at DESC,id DESC LIMIT 1
+                    """,
+                    (account_id, cutoff_dt.isoformat()),
+                ).fetchone()
+                if not previous_row:
+                    return None, None
+                previous = dict(previous_row)
+                previous_metadata = _json(previous["metadata"])
+                return _dt(previous["finished_at"]), x_capture_attempt_fingerprint(
                     status="success",
                     candidate_count=int(previous_metadata.get("candidate_count") or 0),
                     seeded_count=int(previous_metadata.get("seeded_count") or 0),
@@ -449,60 +462,67 @@ class SQLiteXCaptureRepository:
                     error=None,
                     metadata=previous_metadata,
                 )
-            if should_sample_x_capture_attempt(
-                status=stats.status,
-                new_count=stats.new_count,
-                saved_count=stats.saved_count,
-                fingerprint=fingerprint,
-                finished_at=finished_at,
-                previous_finished_at=_dt(previous["finished_at"]) if previous else None,
-                previous_fingerprint=previous_fingerprint,
-            ):
-                persisted_metadata = {
-                    **metadata,
-                    "candidate_count": stats.candidate_count,
-                    "seeded_count": stats.seeded_count,
-                }
-                conn.execute(
-                    """
-                    INSERT INTO x_capture_attempts(
-                        account_id,username_lower,status,source,candidate_count,seeded_count,new_count,saved_count,
-                        error,started_at,finished_at,metadata
-                    ) VALUES(?,?,?,'fxtwitter',?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        stats.account.id,
-                        stats.account.username_lower,
-                        stats.status,
-                        stats.candidate_count,
-                        stats.seeded_count,
-                        stats.new_count,
-                        stats.saved_count,
-                        stats.error,
-                        started_at.isoformat(),
-                        finished_at.isoformat(),
-                        json.dumps(persisted_metadata, ensure_ascii=False),
-                    ),
+
+            for stats, started_at, finished_at in items:
+                should_insert, metadata = evaluate_attempt_sample(
+                    stats,
+                    finished_at=finished_at,
+                    working_cache=working_cache,
+                    pending_cache_updates=pending_cache_updates,
+                    fetch_previous=fetch_previous,
                 )
-            conn.execute(
-                """
-                UPDATE x_capture_accounts
-                SET last_polled_at=?,
-                    last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
-                    last_error=CASE WHEN ?='success' THEN NULL ELSE ? END,
-                    updated_at=?
-                WHERE id=?
-                """,
-                (
-                    finished_at.isoformat(),
+                if should_insert:
+                    persisted_metadata = {
+                        **metadata,
+                        "candidate_count": stats.candidate_count,
+                        "seeded_count": stats.seeded_count,
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO x_capture_attempts(
+                            account_id,username_lower,status,source,candidate_count,seeded_count,new_count,saved_count,
+                            error,started_at,finished_at,metadata
+                        ) VALUES(?,?,?,'fxtwitter',?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            stats.account.id,
+                            stats.account.username_lower,
+                            stats.status,
+                            stats.candidate_count,
+                            stats.seeded_count,
+                            stats.new_count,
+                            stats.saved_count,
+                            stats.error,
+                            started_at.isoformat(),
+                            finished_at.isoformat(),
+                            json.dumps(persisted_metadata, ensure_ascii=False),
+                        ),
+                    )
+                finished_iso = finished_at.isoformat()
+                account_updates[stats.account.id] = (
+                    finished_iso,
                     stats.status,
-                    finished_at.isoformat(),
+                    finished_iso,
                     stats.status,
                     stats.error,
-                    _now().isoformat(),
+                    now_iso,
                     stats.account.id,
-                ),
-            )
+                )
+            for row_params in account_updates.values():
+                conn.execute(
+                    """
+                    UPDATE x_capture_accounts
+                    SET last_polled_at=?,
+                        last_success_at=CASE WHEN ?='success' THEN ? ELSE last_success_at END,
+                        last_error=CASE WHEN ?='success' THEN NULL ELSE ? END,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    row_params,
+                )
+        if pending_cache_updates:
+            with self._noop_cache_lock:
+                self._noop_sample_cache.update(pending_cache_updates)
 
     def prune_attempts_before(self, cutoff: datetime) -> int:
         with self._connect() as conn:

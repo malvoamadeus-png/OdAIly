@@ -2142,7 +2142,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
                     name="max_concurrency"
                     type="number"
                     min="1"
-                    max="20"
+                    max="128"
                     value={settings.max_concurrency}
                     onChange={(event) => updateSetting('max_concurrency', event.target.value)}
                   />

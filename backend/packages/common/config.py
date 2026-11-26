@@ -125,6 +125,12 @@ class XCaptureWorkerSettings(BaseModel):
         ge=1,
         le=86400,
     )
+    config_reload_interval_seconds: float = Field(default=30.0, ge=5.0, le=3600.0)
+    min_request_interval_seconds: float = Field(default=0.05, ge=0.0, le=5.0)
+    detail_workers: int = Field(default=8, ge=1, le=32)
+    timeline_retries: int = Field(default=1, ge=0, le=3)
+    timeline_retry_delay_seconds: float = Field(default=0.35, ge=0.0, le=5.0)
+    timeline_timeout_seconds: float = Field(default=7.0, ge=1.0, le=60.0)
 
 
 def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
@@ -134,6 +140,12 @@ def load_x_capture_worker_settings() -> XCaptureWorkerSettings:
         "processing_freshness_window_seconds": (
             os.getenv("PROCESSING_FRESHNESS_WINDOW_SECONDS") or DEFAULT_PROCESSING_FRESHNESS_WINDOW_SECONDS
         ),
+        "config_reload_interval_seconds": os.getenv("X_CAPTURE_CONFIG_RELOAD_INTERVAL_SECONDS") or 30.0,
+        "min_request_interval_seconds": os.getenv("X_CAPTURE_MIN_REQUEST_INTERVAL_SECONDS") or 0.05,
+        "detail_workers": os.getenv("X_CAPTURE_DETAIL_WORKERS") or 8,
+        "timeline_retries": os.getenv("X_CAPTURE_TIMELINE_RETRIES") or 1,
+        "timeline_retry_delay_seconds": os.getenv("X_CAPTURE_TIMELINE_RETRY_DELAY_SECONDS") or 0.35,
+        "timeline_timeout_seconds": os.getenv("X_CAPTURE_TIMELINE_TIMEOUT_SECONDS") or 7.0,
     }
     try:
         return XCaptureWorkerSettings.model_validate(payload)

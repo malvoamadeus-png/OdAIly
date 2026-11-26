@@ -11,7 +11,16 @@
 - `x_capture_settings`
 - `x_capture_accounts`
 
-worker 启动时加载配置。运行中不再保留专门的数据库监听连接，而是按固定窗口轮询重载配置，默认最多 5 分钟生效一次，不需要重启服务。
+worker 启动时加载配置。运行中不再保留专门的数据库监听连接，而是按固定窗口轮询重载配置，默认最多 30 秒生效一次（`X_CAPTURE_CONFIG_RELOAD_INTERVAL_SECONDS=30`），不需要重启服务。
+
+## 调度、并发与重试机制
+
+- 常驻运行使用单账号独立触发节拍与 `FIRST_COMPLETED` 滑动调度器：每个账号到期即投入 `ThreadPoolExecutor(max_workers=max_concurrency)`，按本次触发时刻加有效抓取频率（及可选 `jitter_seconds`）计算下一次到期时间，不因整批慢账号拖尾而延后其他账号；单账号加 `in_flight` 保护避免同一账号重入。
+- 抓取失败（如 FXTwitter 偶发 `404`、超时或服务端错误）不拉长账号下次抓取间隔，下一周期继续按原频率准点触发。
+- `FXTwitterClient` 使用线程隔离的 `requests.Session` 复用 HTTP 连接，并由全局 `CollectRequestPacer` 按最小起发间隔（默认 `X_CAPTURE_MIN_REQUEST_INTERVAL_SECONDS=0.05` 秒）平滑请求起发。
+- timeline 轮询默认超时较短（`X_CAPTURE_TIMELINE_TIMEOUT_SECONDS=7` 秒），并对瞬时 `404`、`408`、`425`、`5xx` 与连接/超时异常做当轮快速重试（默认 `X_CAPTURE_TIMELINE_RETRIES=1`、`X_CAPTURE_TIMELINE_RETRY_DELAY_SECONDS=0.35` 秒）；`429` 不立即重试。
+- timeline 线程仅抓取列表，比对内存近期已见缓存（启动时预载最近 `x_seen_tweets`）后，仅将未见新帖（及首轮 seed）投递给独立下游详情线程池（`X_CAPTURE_DETAIL_WORKERS=8`）执行详情/上下文链、GMGN 代币解析、任务入库和流水线提交，并配合在途 `tweet_id` 集合防重入。
+- 数据库 `x_capture_attempts` 与 `x_capture_accounts` 状态更新由单写线程批量合并落库，并在内存维护 10 分钟空轮询采样缓存，避免高并发下争用 PostgreSQL 连接池；`x_capture_settings.max_concurrency` 支持 `1–128`。
 
 `x_capture_accounts.monitor_group` 仅用于控制台把账号展示在高频区或低频区，不进入 worker 配置，不影响抓取频率、顺序或任务处理。
 
@@ -137,9 +146,9 @@ X Article 与引用/回复前序链处理规则：
 
 当前心跳策略：
 
-- 稳定态最多 60 秒写一次
-- 状态切换立即写
-- 失败立即写
+- 启动立即写一次心跳
+- 稳定态（每 60 秒窗口汇总）最多 60 秒写一次；窗口内部分账号失败而至少一个账号成功时写 `status=degraded`、`success=true`
+- 窗口内全部已处理账号均失败、状态切换或异常退出时立即写 `status=failed`、`success=false`
 
 因此“心跳”现在表示 worker 还在健康轮询，不再等价于“每次轮询都写库”。
 

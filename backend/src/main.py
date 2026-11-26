@@ -1157,6 +1157,8 @@ def local_pipeline_exhaust_command(args: argparse.Namespace) -> int:
 
 
 def x_capture_worker_command(args: argparse.Namespace) -> int:
+    import signal
+
     from packages.common.source_exclusions import SourceExclusionMatcher, create_source_exclusion_repository
     from packages.local_pipeline import LocalPipelineClient
     from packages.x_capture import FXTwitterClient, XCaptureWorker
@@ -1164,19 +1166,42 @@ def x_capture_worker_command(args: argparse.Namespace) -> int:
 
     settings = load_x_capture_worker_settings()
     repository = create_x_capture_repository(None)
+    client = FXTwitterClient(
+        timeline_timeout_seconds=settings.timeline_timeout_seconds,
+        timeline_retries=settings.timeline_retries,
+        timeline_retry_delay_seconds=settings.timeline_retry_delay_seconds,
+    )
     worker = XCaptureWorker(
         repository=repository,
-        client=FXTwitterClient(),
+        client=client,
+        config_reload_interval_seconds=settings.config_reload_interval_seconds,
         attempt_retention_days=settings.attempt_retention_days,
         freshness_window_seconds=settings.processing_freshness_window_seconds,
         pipeline_client=LocalPipelineClient(),
         exclusion_matcher=SourceExclusionMatcher(create_source_exclusion_repository(None)),
+        min_request_interval_seconds=settings.min_request_interval_seconds,
+        detail_workers=settings.detail_workers,
     )
     if args.once:
-        stats = worker.run_once()
-        print(f"[odaily] x-capture once completed. accounts={len(stats)}")
-        return 0 if all(item.status == "success" for item in stats) else 1
-    worker.run_forever()
+        try:
+            stats = worker.run_once()
+            print(f"[odaily] x-capture once completed. accounts={len(stats)}")
+            return 0 if all(item.status == "success" for item in stats) else 1
+        finally:
+            client.close()
+
+    def handle_stop(_signum, _frame) -> None:
+        worker.stop()
+
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    signal.signal(signal.SIGTERM, handle_stop)
+    signal.signal(signal.SIGINT, handle_stop)
+    try:
+        worker.run_forever()
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
     return 0
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -22,6 +24,12 @@ from .naming import choose_effective_author_name, normalize_lookup_username, nor
 
 
 CONFIG_NOTIFY_CHANNEL = "x_capture_config_changed"
+X_CAPTURE_MAX_CONCURRENCY = 128
+
+WIDEN_MAX_CONCURRENCY_SQL = """
+ALTER TABLE x_capture_settings DROP CONSTRAINT IF EXISTS x_capture_settings_max_concurrency_check;
+ALTER TABLE x_capture_settings ADD CONSTRAINT x_capture_settings_max_concurrency_check CHECK (max_concurrency BETWEEN 1 AND 128);
+"""
 
 X_CAPTURE_SOURCE_TRIGGER_SQL = """CREATE TRIGGER trg_odaily_x_capture_attempts
 AFTER INSERT OR UPDATE ON main.x_capture_attempts FOR EACH ROW
@@ -32,6 +40,62 @@ EXECUTE FUNCTION main.odaily_capture_source_state('1','id','username_lower','sta
 def _install_capture_attempt_trigger(connection) -> None:
     ensure_source_state_schema(connection)
     connection.execute(X_CAPTURE_SOURCE_TRIGGER_SQL)
+
+
+def _attempt_fingerprint(stats: CaptureRunStats) -> tuple[dict[str, Any], str]:
+    metadata = dict(stats.metadata)
+    fingerprint = x_capture_attempt_fingerprint(
+        status=stats.status,
+        candidate_count=stats.candidate_count,
+        seeded_count=stats.seeded_count,
+        new_count=stats.new_count,
+        saved_count=stats.saved_count,
+        error=stats.error,
+        metadata=metadata,
+    )
+    return metadata, fingerprint
+
+
+def evaluate_attempt_sample(
+    stats: CaptureRunStats,
+    *,
+    finished_at: datetime,
+    working_cache: dict[int, tuple[datetime, str]],
+    pending_cache_updates: dict[int, tuple[datetime, str]],
+    fetch_previous: Callable[[int, datetime], tuple[datetime | None, str | None]],
+) -> tuple[bool, dict[str, Any]]:
+    metadata, fingerprint = _attempt_fingerprint(stats)
+    is_noop_success = stats.status == "success" and stats.new_count == 0 and stats.saved_count == 0
+    if not is_noop_success:
+        return True, metadata
+    cached = working_cache.get(stats.account.id)
+    if cached is not None and not should_sample_x_capture_attempt(
+        status=stats.status,
+        new_count=stats.new_count,
+        saved_count=stats.saved_count,
+        fingerprint=fingerprint,
+        finished_at=finished_at,
+        previous_finished_at=cached[0],
+        previous_fingerprint=cached[1],
+    ):
+        return False, metadata
+    previous_finished_at, previous_fingerprint = fetch_previous(stats.account.id, finished_at - NOOP_SUCCESS_WINDOW)
+    should_insert = should_sample_x_capture_attempt(
+        status=stats.status,
+        new_count=stats.new_count,
+        saved_count=stats.saved_count,
+        fingerprint=fingerprint,
+        finished_at=finished_at,
+        previous_finished_at=previous_finished_at,
+        previous_fingerprint=previous_fingerprint,
+    )
+    if should_insert:
+        working_cache[stats.account.id] = (finished_at, fingerprint)
+        pending_cache_updates[stats.account.id] = (finished_at, fingerprint)
+    elif previous_finished_at is not None and previous_fingerprint is not None:
+        working_cache[stats.account.id] = (previous_finished_at, previous_fingerprint)
+        pending_cache_updates[stats.account.id] = (previous_finished_at, previous_fingerprint)
+    return should_insert, metadata
 
 
 class XCaptureRepository(Protocol):
@@ -154,6 +218,8 @@ class PostgresXCaptureRepository:
 
         self._Jsonb = Jsonb
         self.application_name = "odaily-x-capture"
+        self._noop_cache_lock = threading.Lock()
+        self._noop_sample_cache: dict[int, tuple[datetime, str]] = {}
 
     @contextmanager
     def _connect(self, *, autocommit: bool = False):
@@ -182,6 +248,9 @@ class PostgresXCaptureRepository:
                 ), PostgresMigration(
                     3, "x_capture_information_projection", sha256(X_CAPTURE_SOURCE_TRIGGER_SQL.encode()).hexdigest(),
                     _install_capture_attempt_trigger,
+                ), PostgresMigration(
+                    4, "x_capture_widen_max_concurrency", sha256(WIDEN_MAX_CONCURRENCY_SQL.encode()).hexdigest(),
+                    lambda connection: connection.execute(WIDEN_MAX_CONCURRENCY_SQL),
                 )),
             )
 
@@ -400,6 +469,14 @@ class PostgresXCaptureRepository:
         seen = {str(row["tweet_id"]) for row in rows}
         return set(tweet_ids) - seen
 
+    def list_recent_seen_tweet_ids(self, *, limit: int = 50_000) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT tweet_id FROM x_seen_tweets ORDER BY created_at DESC LIMIT %s",
+                (max(1, int(limit)),),
+            ).fetchall()
+        return [str(row["tweet_id"]) for row in rows]
+
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None:
         effective_author_name = choose_effective_author_name(
             write_name=account.write_name,
@@ -455,36 +532,35 @@ class PostgresXCaptureRepository:
             return int(row["id"]) if row is not None else None
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
-        metadata = dict(stats.metadata)
-        fingerprint = x_capture_attempt_fingerprint(
-            status=stats.status,
-            candidate_count=stats.candidate_count,
-            seeded_count=stats.seeded_count,
-            new_count=stats.new_count,
-            saved_count=stats.saved_count,
-            error=stats.error,
-            metadata=metadata,
-        )
+        self.record_attempts_batch([(stats, started_at, finished_at)])
+
+    def record_attempts_batch(self, items: Sequence[tuple[CaptureRunStats, datetime, datetime]]) -> None:
+        if not items:
+            return
+        with self._noop_cache_lock:
+            working_cache = dict(self._noop_sample_cache)
+        pending_cache_updates: dict[int, tuple[datetime, str]] = {}
+        account_updates: dict[int, dict[str, Any]] = {}
         with self._connect() as conn:
-            previous = conn.execute(
-                """
-                SELECT finished_at, metadata
-                FROM x_capture_attempts
-                WHERE account_id = %s
-                  AND status = 'success'
-                  AND new_count = 0
-                  AND saved_count = 0
-                  AND finished_at >= %s
-                ORDER BY finished_at DESC, id DESC
-                LIMIT 1
-                """,
-                (stats.account.id, finished_at - NOOP_SUCCESS_WINDOW),
-            ).fetchone()
-            previous_finished_at = previous.get("finished_at") if previous else None
-            previous_metadata = previous.get("metadata") if previous else {}
-            previous_fingerprint = None
-            if previous is not None:
-                previous_fingerprint = x_capture_attempt_fingerprint(
+            def fetch_previous(account_id: int, cutoff: datetime) -> tuple[datetime | None, str | None]:
+                previous = conn.execute(
+                    """
+                    SELECT finished_at, metadata
+                    FROM x_capture_attempts
+                    WHERE account_id = %s
+                      AND status = 'success'
+                      AND new_count = 0
+                      AND saved_count = 0
+                      AND finished_at >= %s
+                    ORDER BY finished_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (account_id, cutoff),
+                ).fetchone()
+                if previous is None:
+                    return None, None
+                previous_metadata = previous.get("metadata") or {}
+                return previous.get("finished_at"), x_capture_attempt_fingerprint(
                     status="success",
                     candidate_count=int(previous_metadata.get("candidate_count") or 0),
                     seeded_count=int(previous_metadata.get("seeded_count") or 0),
@@ -493,58 +569,64 @@ class PostgresXCaptureRepository:
                     error=None,
                     metadata=previous_metadata,
                 )
-            if should_sample_x_capture_attempt(
-                status=stats.status,
-                new_count=stats.new_count,
-                saved_count=stats.saved_count,
-                fingerprint=fingerprint,
-                finished_at=finished_at,
-                previous_finished_at=previous_finished_at,
-                previous_fingerprint=previous_fingerprint,
-            ):
-                persisted_metadata = {
-                    **metadata,
-                    "candidate_count": stats.candidate_count,
-                    "seeded_count": stats.seeded_count,
-                }
-                conn.execute(
-                    """
-                    INSERT INTO x_capture_attempts (
-                        account_id, username_lower, status, source, candidate_count, seeded_count,
-                        new_count, saved_count, error, started_at, finished_at, metadata
-                    )
-                    VALUES (%s, %s, %s, 'fxtwitter', %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        stats.account.id,
-                        stats.account.username_lower,
-                        stats.status,
-                        stats.candidate_count,
-                        stats.seeded_count,
-                        stats.new_count,
-                        stats.saved_count,
-                        stats.error,
-                        started_at,
-                        finished_at,
-                        self._Jsonb(persisted_metadata),
-                    ),
+
+            for stats, started_at, finished_at in items:
+                should_insert, metadata = evaluate_attempt_sample(
+                    stats,
+                    finished_at=finished_at,
+                    working_cache=working_cache,
+                    pending_cache_updates=pending_cache_updates,
+                    fetch_previous=fetch_previous,
                 )
-            conn.execute(
-                """
-                UPDATE x_capture_accounts
-                SET last_polled_at = %(finished_at)s,
-                    last_success_at = CASE WHEN %(status)s = 'success' THEN %(finished_at)s ELSE last_success_at END,
-                    last_error = CASE WHEN %(status)s = 'success' THEN NULL ELSE %(error)s END,
-                    updated_at = now()
-                WHERE id = %(account_id)s
-                """,
-                {
+                if should_insert:
+                    persisted_metadata = {
+                        **metadata,
+                        "candidate_count": stats.candidate_count,
+                        "seeded_count": stats.seeded_count,
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO x_capture_attempts (
+                            account_id, username_lower, status, source, candidate_count, seeded_count,
+                            new_count, saved_count, error, started_at, finished_at, metadata
+                        )
+                        VALUES (%s, %s, %s, 'fxtwitter', %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            stats.account.id,
+                            stats.account.username_lower,
+                            stats.status,
+                            stats.candidate_count,
+                            stats.seeded_count,
+                            stats.new_count,
+                            stats.saved_count,
+                            stats.error,
+                            started_at,
+                            finished_at,
+                            self._Jsonb(persisted_metadata),
+                        ),
+                    )
+                account_updates[stats.account.id] = {
                     "finished_at": finished_at,
                     "status": stats.status,
                     "error": stats.error,
                     "account_id": stats.account.id,
-                },
-            )
+                }
+            for params in account_updates.values():
+                conn.execute(
+                    """
+                    UPDATE x_capture_accounts
+                    SET last_polled_at = %(finished_at)s,
+                        last_success_at = CASE WHEN %(status)s = 'success' THEN %(finished_at)s ELSE last_success_at END,
+                        last_error = CASE WHEN %(status)s = 'success' THEN NULL ELSE %(error)s END,
+                        updated_at = now()
+                    WHERE id = %(account_id)s
+                    """,
+                    params,
+                )
+        if pending_cache_updates:
+            with self._noop_cache_lock:
+                self._noop_sample_cache.update(pending_cache_updates)
 
     def prune_attempts_before(self, cutoff: datetime) -> int:
         with self._connect() as conn:
@@ -635,6 +717,7 @@ def create_x_capture_repository(database_url: str | None = None) -> XCaptureRepo
 
 class InMemoryXCaptureRepository:
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self.settings = XCaptureSettings()
         self.accounts: dict[int, XCaptureAccount] = {}
         self._account_id = 1
@@ -766,70 +849,81 @@ class InMemoryXCaptureRepository:
         del self.accounts[account_id]
 
     def mark_account_seeded(self, account: XCaptureAccount, tweet_ids: list[str]) -> None:
-        for tweet_id in tweet_ids:
-            self.seen.setdefault(tweet_id, {"account_id": account.id, "seeded": True})
-        payload = asdict(account)
-        payload["seeded_at"] = utc_now()
-        payload["updated_at"] = utc_now()
-        self.accounts[account.id] = XCaptureAccount(**payload)
+        with self._lock:
+            for tweet_id in tweet_ids:
+                self.seen.setdefault(tweet_id, {"account_id": account.id, "seeded": True})
+            payload = asdict(account)
+            payload["seeded_at"] = utc_now()
+            payload["updated_at"] = utc_now()
+            self.accounts[account.id] = XCaptureAccount(**payload)
 
     def mark_seen(self, account: XCaptureAccount, tweet_id: str, *, seeded: bool) -> bool:
-        if tweet_id in self.seen:
-            return False
-        self.seen[tweet_id] = {"account_id": account.id, "seeded": seeded}
-        return True
+        with self._lock:
+            if tweet_id in self.seen:
+                return False
+            self.seen[tweet_id] = {"account_id": account.id, "seeded": seeded}
+            return True
 
     def unseen_tweet_ids(self, tweet_ids: list[str]) -> set[str]:
-        return {tweet_id for tweet_id in tweet_ids if tweet_id not in self.seen}
+        with self._lock:
+            return {tweet_id for tweet_id in tweet_ids if tweet_id not in self.seen}
+
+    def list_recent_seen_tweet_ids(self, *, limit: int = 50_000) -> list[str]:
+        with self._lock:
+            keys = list(self.seen.keys())
+        return keys[-max(1, int(limit)):][::-1]
 
     def save_task(self, account: XCaptureAccount, record: CaptureRecord) -> int | None:
-        if any(item["source_item_id"] == record.tweet_id for item in self.tasks):
-            return None
-        effective_author_name = choose_effective_author_name(
-            write_name=account.write_name,
-            author_display_name=record.author_display_name,
-            author_username=record.author_username,
-        )
-        self.tasks.append(
-            {
-                "id": len(self.tasks) + 1,
-                "source": "x",
-                "source_item_id": record.tweet_id,
-                "source_url": record.url,
-                "title": f"@{record.author_username}: {record.text[:80]}",
-                "content": record.text,
-                "published_at": record.created_at,
-                "metadata": {
-                    **record.metadata,
-                    "account_id": account.id,
-                    "account_username": account.username,
-                    "author_username": record.author_username,
-                    "author_display_name": record.author_display_name,
-                    "effective_author_name": effective_author_name,
-                    "x_account_is_ai_source": account.is_ai_source,
-                },
-                "status": "pending",
-                "created_at": utc_now(),
-                "updated_at": utc_now(),
-            }
-        )
-        return int(self.tasks[-1]["id"])
+        with self._lock:
+            existing = next((item for item in self.tasks if item["source_item_id"] == record.tweet_id), None)
+            if existing is not None:
+                return int(existing["id"])
+            effective_author_name = choose_effective_author_name(
+                write_name=account.write_name,
+                author_display_name=record.author_display_name,
+                author_username=record.author_username,
+            )
+            self.tasks.append(
+                {
+                    "id": len(self.tasks) + 1,
+                    "source": "x",
+                    "source_item_id": record.tweet_id,
+                    "source_url": record.url,
+                    "title": f"@{record.author_username}: {record.text[:80]}",
+                    "content": record.text,
+                    "published_at": record.created_at,
+                    "metadata": {
+                        **record.metadata,
+                        "account_id": account.id,
+                        "account_username": account.username,
+                        "author_username": record.author_username,
+                        "author_display_name": record.author_display_name,
+                        "effective_author_name": effective_author_name,
+                        "x_account_is_ai_source": account.is_ai_source,
+                    },
+                    "status": "pending",
+                    "created_at": utc_now(),
+                    "updated_at": utc_now(),
+                }
+            )
+            return int(self.tasks[-1]["id"])
+
+    def record_attempts_batch(self, items: Sequence[tuple[CaptureRunStats, datetime, datetime]]) -> None:
+        with self._lock:
+            for stats, started_at, finished_at in items:
+                self._record_attempt_locked(stats, started_at=started_at, finished_at=finished_at)
 
     def record_attempt(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
+        with self._lock:
+            self._record_attempt_locked(stats, started_at=started_at, finished_at=finished_at)
+
+    def _record_attempt_locked(self, stats: CaptureRunStats, *, started_at: datetime, finished_at: datetime) -> None:
+        raw_metadata, fingerprint = _attempt_fingerprint(stats)
         metadata = {
-            **stats.metadata,
+            **raw_metadata,
             "candidate_count": stats.candidate_count,
             "seeded_count": stats.seeded_count,
         }
-        fingerprint = x_capture_attempt_fingerprint(
-            status=stats.status,
-            candidate_count=stats.candidate_count,
-            seeded_count=stats.seeded_count,
-            new_count=stats.new_count,
-            saved_count=stats.saved_count,
-            error=stats.error,
-            metadata=metadata,
-        )
         previous = next(
             (
                 attempt
@@ -918,7 +1012,7 @@ SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + """
 CREATE TABLE IF NOT EXISTS x_capture_settings (
     singleton_key text PRIMARY KEY DEFAULT 'global',
     global_interval_seconds integer NOT NULL DEFAULT 30 CHECK (global_interval_seconds BETWEEN 5 AND 3600),
-    max_concurrency integer NOT NULL DEFAULT 2 CHECK (max_concurrency BETWEEN 1 AND 20),
+    max_concurrency integer NOT NULL DEFAULT 2 CHECK (max_concurrency BETWEEN 1 AND 128),
     jitter_seconds integer NOT NULL DEFAULT 5 CHECK (jitter_seconds BETWEEN 0 AND 300),
     config_version bigint NOT NULL DEFAULT 1,
     updated_at timestamptz NOT NULL DEFAULT now()

@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .models import CaptureRecord, TimelineAttempt, TweetCandidate
 from .token_identity import (
@@ -271,19 +274,73 @@ def candidate_from_fxtwitter(payload: dict[str, Any]) -> TweetCandidate | None:
     )
 
 
+_ORIGINAL_REQUESTS_GET = requests.get
+
+
+def _should_retry_timeline_error(exc: Exception) -> bool:
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        return status in {404, 408, 425} or (status is not None and status >= 500)
+    return isinstance(
+        exc,
+        (
+            requests.Timeout,
+            requests.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+            TimeoutError,
+            ConnectionError,
+        ),
+    )
+
+
 class FXTwitterClient:
     def __init__(
         self,
         *,
         timeout_seconds: float = 20.0,
+        connect_timeout_seconds: float = 3.0,
+        timeline_timeout_seconds: float = 7.0,
+        timeline_retries: int = 1,
+        timeline_retry_delay_seconds: float = 0.35,
         user_agent: str = "odaily-x-capture/1.0",
         token_symbol_resolver: TokenSymbolResolver = resolve_token_symbol_with_gmgn,
+        before_request: Callable[[], None] | None = None,
     ) -> None:
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = float(timeout_seconds)
+        self.connect_timeout_seconds = max(0.5, float(connect_timeout_seconds))
+        self.timeline_timeout_seconds = max(1.0, float(timeline_timeout_seconds))
+        self.timeline_retries = max(0, int(timeline_retries))
+        self.timeline_retry_delay_seconds = max(0.0, float(timeline_retry_delay_seconds))
         self.user_agent = user_agent
         self.token_symbol_resolver = token_symbol_resolver
+        self.before_request = before_request
         self._token_symbol_cache: dict[tuple[tuple[str, ...], str], str | None] = {}
         self._token_symbol_cache_lock = threading.Lock()
+        self._session_local = threading.local()
+        self._sessions: list[requests.Session] = []
+        self._sessions_lock = threading.Lock()
+
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            adapter = HTTPAdapter(pool_connections=16, pool_maxsize=64)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            self._session_local.session = session
+            with self._sessions_lock:
+                self._sessions.append(session)
+        return session
+
+    def close(self) -> None:
+        with self._sessions_lock:
+            sessions = list(self._sessions)
+            self._sessions.clear()
+        for session in sessions:
+            try:
+                session.close()
+            except Exception:
+                pass
 
     def _resolve_token_symbol(self, chains: tuple[str, ...], address: str) -> str | None:
         cache_key = (chains, address.casefold())
@@ -301,30 +358,69 @@ class FXTwitterClient:
             self._token_symbol_cache[cache_key] = symbol
             return symbol
 
-    def _get_json(self, url: str, *, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        response = requests.get(
-            url,
-            params=params,
-            headers={
-                "User-Agent": self.user_agent,
-                "Accept": "application/json,text/plain,*/*",
-                "Accept-Encoding": "gzip, deflate",
-            },
-            timeout=self.timeout_seconds,
+    def _request_timeout(self, read_timeout_seconds: float) -> tuple[float, float]:
+        read_timeout = max(0.5, float(read_timeout_seconds))
+        return (min(self.connect_timeout_seconds, read_timeout), read_timeout)
+
+    def _get_json(
+        self,
+        url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        before_request: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        hook = before_request if before_request is not None else self.before_request
+        if hook is not None:
+            hook()
+        request_timeout = self._request_timeout(
+            self.timeout_seconds if timeout_seconds is None else timeout_seconds
         )
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Encoding": "gzip, deflate",
+        }
+        if requests.get is not _ORIGINAL_REQUESTS_GET:
+            response = requests.get(url, params=params, headers=headers, timeout=request_timeout)
+        else:
+            response = self._get_session().get(url, params=params, headers=headers, timeout=request_timeout)
         if response.status_code == 204:
             return {}
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, dict) else {}
 
-    def fetch_timeline(self, username: str, *, count: int = 20) -> tuple[list[TweetCandidate], TimelineAttempt]:
+    def fetch_timeline(
+        self,
+        username: str,
+        *,
+        count: int = 20,
+        retries: int | None = None,
+        before_request: Callable[[], None] | None = None,
+    ) -> tuple[list[TweetCandidate], TimelineAttempt]:
         normalized = normalize_username(username)
         url = f"https://api.fxtwitter.com/2/profile/{normalized}/statuses"
-        try:
-            payload = self._get_json(url, params={"count": max(1, min(count, 100))})
-        except Exception as exc:
-            return [], TimelineAttempt("fxtwitter", "fetch_failed", url, str(exc))
+        max_retries = self.timeline_retries if retries is None else max(0, int(retries))
+        payload: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                payload = self._get_json(
+                    url,
+                    params={"count": max(1, min(count, 100))},
+                    timeout_seconds=self.timeline_timeout_seconds,
+                    before_request=before_request,
+                )
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_retries or not _should_retry_timeline_error(exc):
+                    return [], TimelineAttempt("fxtwitter", "fetch_failed", url, str(exc))
+                if self.timeline_retry_delay_seconds > 0:
+                    time.sleep(self.timeline_retry_delay_seconds * (attempt + 1))
+        if payload is None:
+            return [], TimelineAttempt("fxtwitter", "fetch_failed", url, str(last_error or "fetch failed"))
 
         results = payload.get("results")
         if not isinstance(results, list):

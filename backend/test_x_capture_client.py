@@ -2,6 +2,9 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+import requests
+
 from packages.x_capture.client import FXTwitterClient
 from packages.x_capture.models import TweetCandidate, XCaptureAccount
 from packages.x_capture.sqlite_repository import SQLiteXCaptureRepository
@@ -389,3 +392,111 @@ def test_gmgn_symbol_resolver_falls_back_across_evm_chains() -> None:
         (address, "base"),
         (address, "eth"),
     ]
+
+
+def test_fetch_timeline_retries_404_once_and_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    paced: list[int] = []
+
+    class NotFoundResponse:
+        status_code = 404
+
+        def raise_for_status(self) -> None:
+            raise requests.HTTPError("404 Client Error: Not Found", response=self)
+
+    class OkResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {
+                "results": [
+                    {
+                        "id": "999",
+                        "text": "Recovered post",
+                        "created_at": "Thu Nov 26 08:21:22 +0000 2026",
+                        "author": {"screen_name": "OnchainLens", "name": "Onchain Lens"},
+                    }
+                ]
+            }
+
+    def fake_get(url: str, **kwargs):
+        calls.append(url)
+        return NotFoundResponse() if len(calls) == 1 else OkResponse()
+
+    monkeypatch.setattr("packages.x_capture.client.requests.get", fake_get)
+
+    client = FXTwitterClient(timeline_retries=1, timeline_retry_delay_seconds=0.0)
+    candidates, attempt = client.fetch_timeline("OnchainLens", before_request=lambda: paced.append(1))
+
+    assert len(calls) == 2
+    assert len(paced) == 2
+    assert attempt.status == "success"
+    assert [item.tweet_id for item in candidates] == ["999"]
+
+
+def test_fetch_timeline_does_not_retry_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    class RateLimitedResponse:
+        status_code = 429
+
+        def raise_for_status(self) -> None:
+            raise requests.HTTPError("429 Too Many Requests", response=self)
+
+    def fake_get(url: str, **kwargs):
+        calls.append(url)
+        return RateLimitedResponse()
+
+    monkeypatch.setattr("packages.x_capture.client.requests.get", fake_get)
+
+    candidates, attempt = FXTwitterClient(timeline_retries=2, timeline_retry_delay_seconds=0.0).fetch_timeline("OnchainLens")
+
+    assert len(calls) == 1
+    assert candidates == []
+    assert attempt.status == "fetch_failed"
+    assert "429" in (attempt.error or "")
+
+
+def test_client_reuses_thread_local_session_and_closes(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_sessions: list[object] = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"results": []}
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+            self.mounts: list[str] = []
+            self.calls = 0
+            created_sessions.append(self)
+
+        def mount(self, prefix: str, adapter: object) -> None:
+            self.mounts.append(prefix)
+
+        def get(self, url: str, **kwargs):
+            self.calls += 1
+            return FakeResponse()
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("packages.x_capture.client.requests.Session", FakeSession)
+
+    client = FXTwitterClient()
+    client.fetch_timeline("OnchainLens")
+    client.fetch_timeline("lookonchain")
+    assert len(created_sessions) == 1
+    assert created_sessions[0].calls == 2
+    assert "https://" in created_sessions[0].mounts
+
+    client.close()
+    assert created_sessions[0].closed is True
