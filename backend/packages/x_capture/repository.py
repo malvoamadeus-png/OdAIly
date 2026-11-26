@@ -1012,7 +1012,7 @@ SCHEMA_SQL = PIPELINE_MONITORING_SCHEMA_SQL + CONSOLE_AUTH_SCHEMA_SQL + """
 CREATE TABLE IF NOT EXISTS x_capture_settings (
     singleton_key text PRIMARY KEY DEFAULT 'global',
     global_interval_seconds integer NOT NULL DEFAULT 30 CHECK (global_interval_seconds BETWEEN 5 AND 3600),
-    max_concurrency integer NOT NULL DEFAULT 2 CHECK (max_concurrency BETWEEN 1 AND 128),
+    max_concurrency integer NOT NULL DEFAULT 2 CHECK (max_concurrency BETWEEN 1 AND 20),
     jitter_seconds integer NOT NULL DEFAULT 5 CHECK (jitter_seconds BETWEEN 0 AND 300),
     config_version bigint NOT NULL DEFAULT 1,
     updated_at timestamptz NOT NULL DEFAULT now()
