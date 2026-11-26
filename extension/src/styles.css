@@ -441,6 +441,10 @@ body {
   background: #008f68;
 }
 
+.feedCard__rail--stock_market_breadth {
+  background: #0284c7;
+}
+
 .feedCard__rail--meme_digest {
   background: #c0266d;
 }
@@ -556,6 +560,12 @@ body {
 .statusChip--market {
   background: #e7f8f1;
   color: #007a59;
+  font-weight: 700;
+}
+
+.statusChip--stock-market {
+  background: #e0f2fe;
+  color: #0369a1;
   font-weight: 700;
 }
 

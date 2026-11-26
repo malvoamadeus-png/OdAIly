@@ -21,6 +21,7 @@ const SOUND_PROFILE_META = [
   { key: "writer3_context", label: "此前消息" },
   { key: "whale", label: "巨鲸" },
   { key: "gate_market", label: "Gate行情" },
+  { key: "stock_market_breadth", label: "美股普涨/普跌行情快讯" },
   { key: "meme_digest", label: "Meme速递" }
 ];
 

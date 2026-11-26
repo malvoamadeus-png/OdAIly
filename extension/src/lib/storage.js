@@ -44,6 +44,12 @@ export const DEFAULT_SETTINGS = {
       volume: 0.58,
       cooldownMs: 3500
     },
+    stock_market_breadth: {
+      enabled: true,
+      preset: "beep_double",
+      volume: 0.58,
+      cooldownMs: 3500
+    },
     meme_digest: {
       enabled: true,
       preset: "beep_triple",
@@ -191,6 +197,7 @@ export function sanitizeSoundProfiles(value) {
     writer3_context: sanitizeSoundProfile(value.writer3_context, fallback.writer3_context),
     whale: sanitizeSoundProfile(value.whale, fallback.whale),
     gate_market: sanitizeSoundProfile(value.gate_market, fallback.gate_market),
+    stock_market_breadth: sanitizeSoundProfile(value.stock_market_breadth, fallback.stock_market_breadth),
     meme_digest: sanitizeSoundProfile(value.meme_digest, fallback.meme_digest)
   };
 }

@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from packages.editor_plugin_feed_writer import LocalEditorPluginFeedWriter
 from packages.publisher import PushClient, PushResult
 
 from .aggregation import advance_broadcast
@@ -25,6 +27,7 @@ class StockMarketBroadcastService:
         client: BinanceStockMarketClient | None = None,
         push_client: PushClient | None = None,
         theme_classifier: StockThemeClassifier | None = None,
+        feed_writer: LocalEditorPluginFeedWriter | None = None,
     ) -> None:
         self.settings = settings
         self.store = store or StockMarketStore(settings.database_path)
@@ -42,6 +45,7 @@ class StockMarketBroadcastService:
         self.theme_classifier = theme_classifier
         if self.theme_classifier is None and settings.theme_classification_enabled:
             self.theme_classifier = StockThemeClassifier.from_environment()
+        self.feed_writer = feed_writer or LocalEditorPluginFeedWriter()
         self._startup_baseline_pending = True
         self._baseline_symbols_pending: set[str] = set()
         self._startup_discovery_pending = True
@@ -184,6 +188,23 @@ class StockMarketBroadcastService:
                 error=result.error,
                 now=int(time.time()),
             )
+            if result.ok and alert.market == "us" and alert.broad and len(alert.members) >= 2:
+                try:
+                    self.feed_writer.upsert_stock_market_breadth(
+                        event_id=alert.event_key,
+                        title=alert.title,
+                        content=alert.content,
+                        direction=alert.direction,
+                        tier=alert.tier,
+                        asset_symbols=[member.instrument.asset_name for member in alert.members],
+                        occurred_at=datetime.fromtimestamp(
+                            max(member.observed_at for member in alert.members), UTC,
+                        ),
+                    )
+                except Exception as exc:
+                    print(
+                        f"[stock-market] plugin feed write failed event_id={alert.event_key} error={exc}"
+                    )
             results.append({
                 "assets": [member.instrument.asset_name for member in alert.members],
                 "market": alert.market,

@@ -504,6 +504,53 @@ class LocalEditorPluginFeedWriter:
             ]
         )
 
+    def upsert_stock_market_breadth(
+        self,
+        *,
+        event_id: str,
+        title: str,
+        content: str,
+        direction: str,
+        tier: str,
+        asset_symbols: list[str],
+        occurred_at: datetime | None = None,
+    ) -> None:
+        is_live = tier == "live"
+        self.store.upsert_feed_items(
+            [
+                {
+                    "feed_item_id": f"stock_market_breadth:{event_id}",
+                    "feed_kind": "stock_market_breadth",
+                    "lane": "high",
+                    "priority": 86,
+                    "title": title,
+                    "summary": content,
+                    "badges": [
+                        {"label": "市场", "value": "美股", "tone": "neutral"},
+                        {"label": "资产", "value": f"{len(asset_symbols)}只资产", "tone": "neutral"},
+                        {"label": "方向", "value": "上涨" if direction == "up" else "下跌", "tone": "accent"},
+                    ],
+                    "status_label": "行情直发" if is_live else "行情挂后台",
+                    "status_tone": "stock-market",
+                    "occurred_at": occurred_at or _now(),
+                    "source_url": None,
+                    "detail_url": None,
+                    "action_schema": {"type": "read"},
+                    "meta_json": {
+                        "event_id": event_id,
+                        "odaily_delivery_key": f"stock-market:{event_id}",
+                        "source": "stock_market",
+                        "market": "us",
+                        "direction": direction,
+                        "tier": tier,
+                        "broad": True,
+                        "asset_count": len(asset_symbols),
+                        "asset_symbols": asset_symbols,
+                    },
+                }
+            ]
+        )
+
     def upsert_meme_digest(
         self,
         *,

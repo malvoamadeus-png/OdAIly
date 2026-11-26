@@ -237,6 +237,7 @@ const SOUND_PRIORITY = {
   newsflash_backstage: 3,
   writer3_context: 2,
   gate_market: 3.5,
+  stock_market_breadth: 3.75,
   meme_digest: 3.25,
   whale: 1
 };
@@ -248,7 +249,7 @@ function soundKeyForFeedItem(item) {
   if (item.feed_kind === "writer3_context") {
     return "writer3_context";
   }
-  if (item.feed_kind === "gate_market" || item.feed_kind === "meme_digest") {
+  if (item.feed_kind === "gate_market" || item.feed_kind === "meme_digest" || item.feed_kind === "stock_market_breadth") {
     return item.feed_kind;
   }
   if (item.feed_kind === "whale_onchain" || item.feed_kind === "whale_hyperliquid") {
@@ -289,6 +290,9 @@ function feedSourceClass(item) {
   }
   if (item.feed_kind === "meme_digest") {
     return "feedCard--source-meme";
+  }
+  if (item.feed_kind === "stock_market_breadth") {
+    return "feedCard--source-stock-market";
   }
   const source = String(item.meta_json?.source || "").toLowerCase();
   if (source === "x") {
