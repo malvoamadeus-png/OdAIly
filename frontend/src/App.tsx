@@ -940,7 +940,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
   const [pipelineTiming, setPipelineTiming] = useState<PipelineTimingDashboard>(emptyPipelineTimingDashboard);
   const [gateMarket, setGateMarket] = useState<GateMarketDashboard | null>(null);
   const [stockMarket, setStockMarket] = useState<StockMarketDashboard | null>(null);
-  const [memeColumn, setMemeColumn] = useState<'digest' | 'daily_hot'>('digest');
+  const [memeColumn, setMemeColumn] = useState<'digest' | 'daily_hot' | 'kol_zero'>('digest');
   const [memeDashboard, setMemeDashboard] = useState<MemeDashboard | null>(null);
   const [jin10Settings, setJin10Settings] = useState<Jin10Settings>(emptyJin10Settings);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -1192,7 +1192,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
     }
   }
 
-  async function loadMemeDashboard(column: 'digest' | 'daily_hot' = memeColumn) {
+  async function loadMemeDashboard(column: 'digest' | 'daily_hot' | 'kol_zero' = memeColumn) {
     setError('');
     setLoadingMeme(true);
     try {
@@ -1895,7 +1895,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
       : view === 'stock_market'
         ? `${stockMarket?.contract_count || 0} 个合约 · 每${stockMarket?.poll_interval_seconds || 30}秒轮询 · 只读`
       : view === 'meme'
-        ? `${memeDashboard?.items.length || 0} 条记录 · ${memeColumn === 'daily_hot' ? '每小时扫描 · 首次达标 · 100万美元起' : '市值里程碑与社群热议'} · 只读`
+        ? `${memeDashboard?.items.length || 0} 条记录 · ${memeColumn === 'daily_hot' ? '每小时扫描 · 首次达标 · 100万美元起' : memeColumn === 'kol_zero' ? 'KOL数量为0' : '市值里程碑与社群热议'} · 只读`
       : view === 'x_agent'
         ? '热点话题、热点自动快讯、市场情绪与按头操作的独立工作区'
       : view === 'publisher'
@@ -2341,7 +2341,7 @@ function ConsoleApp({ adminEmail, onSignOut, signingOut }: ConsoleAppProps) {
         ) : view === 'meme' ? (
           <>
             <div className="memeAuditNestedTabs" role="tablist" aria-label="Meme栏目">
-              {([['digest', 'Meme速递'], ['daily_hot', '今日热门Meme']] as const).map(([key, label]) => (
+              {([['digest', 'Meme速递'], ['daily_hot', '今日热门Meme'], ['kol_zero', 'KOL未达标']] as const).map(([key, label]) => (
                 <button key={key} role="tab" aria-selected={memeColumn === key}
                   className={memeColumn === key ? 'memeAuditNestedTab active' : 'memeAuditNestedTab'}
                   disabled={loadingMeme} onClick={() => { setMemeColumn(key); setMemeDashboard(null); void loadMemeDashboard(key); }}>

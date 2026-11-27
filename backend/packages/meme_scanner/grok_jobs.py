@@ -11,8 +11,11 @@ from typing import Any
 import requests
 
 from packages.common.paths import get_paths
-from .grok_callback import create_callback_registration, callback_result_path
+from .grok_callback import callback_ca_matches, create_callback_registration, callback_result_path
 from .grok_routine import DEFAULT_CALLBACK_BASE_URL, load_bearer_headers, load_webhook_url, validate_callback_url
+
+GROK_WAIT_TIMEOUT_SECONDS = 5 * 60
+GROK_WAIT_TIMEOUT = timedelta(seconds=GROK_WAIT_TIMEOUT_SECONDS)
 
 
 def setup(conn: Any) -> None:
@@ -20,7 +23,10 @@ def setup(conn: Any) -> None:
         return
     conn.execute('''CREATE TABLE IF NOT EXISTS meme_grok_jobs(
         trigger_key TEXT PRIMARY KEY, request_id TEXT NOT NULL, started_at TEXT NOT NULL,
-        state TEXT NOT NULL, result_json TEXT, error TEXT)''')
+        state TEXT NOT NULL, result_json TEXT, error TEXT, webhook_run_id TEXT)''')
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(meme_grok_jobs)").fetchall()}
+    if "webhook_run_id" not in columns:
+        conn.execute("ALTER TABLE meme_grok_jobs ADD COLUMN webhook_run_id TEXT")
     conn.commit()
 
 
@@ -45,8 +51,8 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
         else:
             with store.conn:
                 store.conn.execute('''INSERT INTO meme_grok_jobs(
-                    trigger_key, request_id, started_at, state, result_json, error
-                ) VALUES (?, ?, ?, ?, NULL, NULL)''',
+                    trigger_key, request_id, started_at, state, result_json, error, webhook_run_id
+                ) VALUES (?, ?, ?, ?, NULL, NULL, NULL)''',
                                    (key, request_id, started, 'pending'))
             row = store.conn.execute('SELECT * FROM meme_grok_jobs WHERE trigger_key=?', (key,)).fetchone()
             created_by_this_worker = True
@@ -64,7 +70,9 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
             if not webhook:
                 raise ValueError('Missing Grok webhook URL')
             validate_callback_url(webhook)
-            secret = create_callback_registration(root, request_id, token.address)
+            secret = create_callback_registration(
+                root, request_id, token.address, pending_retention=GROK_WAIT_TIMEOUT,
+            )
             if secret is None:
                 raise RuntimeError('Callback registration failed')
             base = validate_callback_url(os.getenv('GROK_CALLBACK_BASE_URL') or DEFAULT_CALLBACK_BASE_URL)
@@ -79,6 +87,22 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
                 receipt = response.json()
                 if not isinstance(receipt, dict) or receipt.get('success') is not True:
                     raise RuntimeError('Grok webhook rejected the request')
+            else:
+                try:
+                    parsed_receipt = response.json()
+                except (AttributeError, ValueError):
+                    parsed_receipt = {}
+                receipt = parsed_receipt if isinstance(parsed_receipt, dict) else {}
+            webhook_run_id = receipt.get('runUuid') if isinstance(receipt, dict) else None
+            if isinstance(webhook_run_id, str) and webhook_run_id.strip() and len(webhook_run_id) <= 256:
+                if hasattr(store, "update_grok_request"):
+                    store.update_grok_request(key, webhook_run_id=webhook_run_id)
+                else:
+                    with store.conn:
+                        store.conn.execute(
+                            "UPDATE meme_grok_jobs SET webhook_run_id=? WHERE trigger_key=?",
+                            (webhook_run_id, key),
+                        )
         except Exception as exc:
             # Never persist response text, URLs, headers or credentials in diagnostics.
             if hasattr(store, "update_grok_request"):
@@ -92,6 +116,10 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
         ).fetchone()
     state = row['state']
     result = json.loads(row['result_json']) if row['result_json'] else None
+    started_at = datetime.fromisoformat(row['started_at'])
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=UTC)
+    wait_deadline = started_at + GROK_WAIT_TIMEOUT
     if state == 'pending':
         try:
             record = json.loads(callback_result_path(root, row['request_id']).read_text(encoding='utf-8'))
@@ -99,10 +127,11 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
             record = {}
         candidate = record.get('result')
         if (record.get('state') == 'complete' and isinstance(candidate, dict)
-                and candidate.get('request_id') == row['request_id'] and candidate.get('ca') == token.address):
+                and candidate.get('request_id') == row['request_id']
+                and callback_ca_matches(candidate.get('ca'), token.address)):
             result = candidate
             state = 'complete' if candidate.get('ok') is True else 'failed'
-        elif (datetime.now(UTC) - datetime.fromisoformat(row['started_at'])).total_seconds() >= 900:
+        elif datetime.now(UTC) >= wait_deadline:
             state = 'timeout'
         if state != 'pending':
             if hasattr(store, "update_grok_request"):
@@ -112,10 +141,11 @@ def prepare(store: Any, job: Any, token: Any) -> tuple[bool, dict[str, Any]]:
                     store.conn.execute('UPDATE meme_grok_jobs SET state=?,result_json=? WHERE trigger_key=?',
                                        (state, json.dumps(result, ensure_ascii=False) if result else None, key))
     audit = {'request_id': row['request_id'], 'state': state, 'started_at': row['started_at'],
-             'error': row['error'], 'result': result}
+             'webhook_run_id': row['webhook_run_id'], 'error': row['error'], 'result': result}
     if state == 'pending':
-        next_at = (datetime.now(UTC) + timedelta(seconds=15)).isoformat()
-        updated_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
+        next_at = min(now + timedelta(seconds=15), wait_deadline).isoformat()
+        updated_at = now.isoformat()
         narrative_json = json.dumps({'status': 'pending', 'grok_routine': audit,
                                      'discovery': json.loads(job['evidence_json'] or '{}')}, ensure_ascii=False)
         if hasattr(store, "defer_grok_job"):

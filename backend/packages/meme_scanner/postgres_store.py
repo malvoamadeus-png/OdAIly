@@ -114,6 +114,11 @@ class PostgresMemeStore:
                         connection.execute("ALTER TABLE meme_grok_jobs ADD COLUMN IF NOT EXISTS odaily_external_error_counted integer NOT NULL DEFAULT 0"),
                         connection.execute("CREATE TABLE IF NOT EXISTS key_breakthrough_results(trigger_key text PRIMARY KEY,status text NOT NULL,reason text,title text,completed_at text)"),
                     ],
+                ), PostgresMigration(
+                    6,
+                    "Track accepted Meme Grok webhook run IDs",
+                    hashlib.sha256(b"meme.grok.webhook_run_id.v6").hexdigest(),
+                    lambda connection: connection.execute("ALTER TABLE meme_grok_jobs ADD COLUMN IF NOT EXISTS webhook_run_id text"),
                 )),
             )
 
@@ -524,13 +529,24 @@ class PostgresMemeStore:
             "all": "TRUE",
             "digest": "trigger_kind <> 'daily_hot'",
             "daily_hot": "trigger_kind = 'daily_hot'",
+            "kol_zero": "TRUE",
         }[column]
+        if column == "kol_zero":
+            visibility_sql = "COALESCE(reason, '') = 'kol_count_zero'"
+        elif column in {"digest", "daily_hot"}:
+            visibility_sql = """COALESCE(reason, '') <> 'kol_count_zero' AND (
+                COALESCE(content, '') <> '' OR COALESCE(reason, '') = 'no_usable_narrative'
+                OR COALESCE(reason, '') LIKE 'narrative_%'
+                OR COALESCE(reason, '') LIKE 'transient_exhausted:narrative_%'
+            )"""
+        else:
+            visibility_sql = "TRUE"
         with connect_postgres(schema=self.schema, application_name="odaily-meme-dashboard") as conn:
             rows = conn.execute(
                 f"""SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,queued_at,status,
                            reason,title,content,updated_at,narrative_json,evidence_json,
                            processing_started_at,publishing_started_at,completed_at
-                    FROM jobs WHERE ({filter_sql}) AND COALESCE(reason, '') NOT IN
+                    FROM jobs WHERE ({filter_sql}) AND ({visibility_sql}) AND COALESCE(reason, '') NOT IN
                     ('volume_gate_failed','tg_market_cap_gate_failed','unsupported_chain','token_not_found')
                     ORDER BY updated_at DESC,id DESC LIMIT %s""",
                 (max(1, min(int(limit), 200)),),
@@ -692,7 +708,8 @@ class PostgresMemeStore:
         return dict(row) if row else None
 
     def update_grok_request(self, trigger_key: str, *, state: str | None = None,
-                            result_json: str | None = None, error: str | None = None) -> None:
+                            result_json: str | None = None, error: str | None = None,
+                            webhook_run_id: str | None = None) -> None:
         assignments = []
         values: list[Any] = []
         if state is not None:
@@ -704,6 +721,9 @@ class PostgresMemeStore:
         if error is not None:
             assignments.append("error=%s")
             values.append(error)
+        if webhook_run_id is not None:
+            assignments.append("webhook_run_id=%s")
+            values.append(webhook_run_id)
         if not assignments:
             return
         values.append(trigger_key)

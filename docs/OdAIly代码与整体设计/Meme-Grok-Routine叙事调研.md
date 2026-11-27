@@ -2,7 +2,7 @@
 
 ## 用途
 
-`meme grok-narrative` 是人工触发的一次性调研入口。它把 CA、可选链和代币名、可选线索提交给外部自动化 Webhook，调查市场在用什么角度和理由炒作该代币。当前接入的是用户提供的 Cursor 自动化端点，由它触发 Grok Bot；这不是直接调用 xAI X Search API。CLI保留人工触发能力；自动Meme速递与今日热门Meme现在通过同一Webhook及回调能力调研，自动调度见《控制台-Meme速递》。自动请求由 `grok_jobs.py` 持久化，等待15分钟后降级，结果进入共用分类写作。服务器私有凭证默认放在 `data/config/grok.txt`（权限600），也可用 `GROK_ROUTINE_CREDENTIALS_FILE`指定；不得提交凭证。
+`meme grok-narrative` 是人工触发的一次性调研入口。它把 CA、可选链和代币名、可选线索提交给外部自动化 Webhook，调查市场在用什么角度和理由炒作该代币。当前接入的是用户提供的 Cursor 自动化端点，由它触发 Grok Bot；这不是直接调用 xAI X Search API。CLI保留人工触发能力；自动Meme速递与今日热门Meme现在通过同一Webhook及回调能力调研，自动调度见《控制台-Meme速递》。自动请求由 `grok_jobs.py` 持久化，非阻塞等待最多5分钟，自动回调登记同步有效5分钟；超时后立即降级，成功结果进入共用分类写作。服务器私有凭证默认放在 `data/config/grok.txt`（权限600），也可用 `GROK_ROUTINE_CREDENTIALS_FILE`指定；不得提交凭证。
 
 Routine 调查只整理市场叙事与证据，不生成买卖建议或价格预测。请求中的 `notes` 只作为检索线索；调查结果仍由 Routine 独立检索并按其结果契约返回。
 
@@ -39,8 +39,9 @@ python backend/src/main.py meme grok-narrative \
 ## 回应与结果闭环
 
 - 当前端点实际返回 HTTP 200 JSON：`{"success":true,"runUuid":"..."}`。这只表示任务已收单，不表示调查完成，也不含结果 JSON。若上游返回 `202`，命令也将其视为收单。
+- 自动请求把回执中的 `runUuid` 持久化为 `webhook_run_id`，并与 OdAIly 的 `request_id` 一同放入任务审计。两者属于不同系统的关联 ID；同 CA 的不同触发任务各自创建回调登记，不按 CA 合并。
 - `--wait-for-result` 使用官方服务器的 HTTPS 回调路由。CLI 先登记本次 `request_id` 和 CA，服务器返回高熵一次性 token；CLI 将带 token 的 callback URL 发给 Grok Bot。Grok POST 结果后，CLI 轮询该 URL 并打印、保存结果。
-- callback POST 必须匹配已登记的 request ID、CA 和 token；服务器仅保存结果 JSON 的 SHA-256 token 摘要和结果正文，不保存明文 token。回调请求体上限为 2 MiB；未完成登记保留 1 小时，完成结果保留 7 天。回调路由不使用浏览器 session，且不把含 token 的路径写入应用访问日志。
+- callback POST 必须匹配本次登记的 request ID、CA 和 token。EVM `0x` 加40位十六进制地址按大小写不敏感比较；其他链地址保持大小写敏感。服务器仅保存结果 JSON 的 SHA-256 token 摘要和结果正文，不保存明文 token。回调请求体上限为 2 MiB；自动任务登记有效5分钟，手动 CLI 登记有效1小时，完成结果保留7天。相同 request ID、token 和结果的重发按幂等成功处理；其他拒收返回安全的原因码和说明，并仅在应用日志记录 request ID 与原因码。回调路由不使用浏览器 session，且不记录含 token 的路径、回调正文或 token。
 - 没有 `--wait-for-result` 或 `--callback-url` 时，Routine 仍只会把结果发到 Grok Bot Main Bot 聊天；操作者需在那里读取结果。
 - `--callback-url` 可用于外部接收端；接收端须自行验证一次性 URL token 等凭证。
 - 命令只发送一次请求，不自动重试，避免网络结果不确定时重复创建调查任务。

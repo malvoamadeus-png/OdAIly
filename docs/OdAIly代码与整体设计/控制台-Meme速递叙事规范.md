@@ -38,7 +38,7 @@ FxTwitter、Telegram 与 FOMO Thesis 由 OdAIly 本地快速材料模块并行�
 
 FOMO profile 缺失、被重定向到登录页或收到明确认证失败时，source diagnostic 记录 `code=login_required`。已有 Telegram/X 材料时，该路只是 `partial`，仍可写作；三路没有正文时，任务每 5 分钟进入一次 `retry_wait`，直至普通 1 小时队列时限到期，并发送冷却后的 Telegram 运维提醒。不会驻留 FOMO 浏览器、daemon、systemd service 或公开远程调试端口；收到提醒后由值班人通过一次性 `meme fomo-login` 维护命令更新服务器运行时 profile。该命令在 `xvfb-run` 中短暂启动浏览器，自动点击唯一可识别的 FOMO 登录、Google 登录及已登录 Google 账号选项；验证码、身份挑战、多个账号或页面结构变化交由值班人通过 loopback DevTools 和 SSH 本地转发接管。DevTools 仅绑定 `127.0.0.1`；profile、Cookie 和 JWT 不得复制、打印或提交。
 
-两个栏目同时请求Grok Bot Routine；请求持久化并以15秒间隔非阻塞读取回调，最多等待15分钟，失败或超时使用本地材料继续写作。Grok继续作为跨平台调研来源，但不再强制单独成段。写作者优先消费其 `what_it_is`、`primary_narrative`、`narratives`、`evidence` 和 `caveats`，并与本地材料按炒作逻辑合并；仅这些结构化字段缺失时才使用旧版 `summary`。重复或无关信息可以省略。采用的事实优先归因到Grok结果中的原始来源，没有原始来源信息时归因于Grok调研。
+两个栏目同时请求Grok Bot Routine；请求持久化并以15秒间隔非阻塞读取回调，最多等待5分钟，自动回调登记同步有效5分钟；失败或超时后使用本地材料继续写作。Grok继续作为跨平台调研来源，但不再强制单独成段。写作者优先消费其 `what_it_is`、`primary_narrative`、`narratives`、`evidence` 和 `caveats`，并与本地材料按炒作逻辑合并；仅这些结构化字段缺失时才使用旧版 `summary`。重复或无关信息可以省略。采用的事实优先归因到Grok结果中的原始来源，没有原始来源信息时归因于Grok调研。
 
 OdAIly 使用 `gpt-6-luna` 对本地材料及可用Grok研究结果做一次结构化分类与写作，输出 `source_material_ids`、`angle_material_ids`、`supplemental_information_ids`、使用/丢弃材料和正文的 `what_it_is`、`core_logic` 字段。程序以这两个字段固定组装两句正文。Grok整个研究结果作为一项材料传入，保留其对象说明、叙事、证据及 caveats；只有结构化字段缺失时才把旧版 `summary` 当作研究材料。该链路通过Webhook调用Grok Bot，不调用Grok X Search、Grok实体补充或GMGN叙事。GMGN仅用于今日热门Meme榜单发现。
 

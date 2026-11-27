@@ -2,7 +2,7 @@
 
 ## 职责
 
-`Meme速递` 是控制台一级只读页面，用于查看 OdAIly 内置 Meme worker 生成的候选、任务状态和最终文本。页面有“Meme速递 / 今日热门Meme”两个二级标签。
+`Meme速递` 是控制台一级只读页面，用于查看 OdAIly 内置 Meme worker 生成的候选、任务状态和最终文本。页面有“Meme速递 / 今日热门Meme / KOL未达标”三个二级标签。前两个只展示已生成正文的任务与叙事流程失败的任务；确认 KOL 数量为 0 的任务单独进入“KOL未达标”。
 它不提供阈值编辑、重跑、发布或任务状态修改能力。
 
 ## 上游链路
@@ -22,7 +22,7 @@
 - `token_snapshots` 以 CA 为主键维度保存每次成功调度到的链、平台、symbol、市值、成交量、时间、来源（`completed`/`token_info`/`tg`）和原始 payload；`market_cap_milestones` 保存 CA+档位的首次观测时间、快照 ID 和任务状态。热议成功入队时立即写 active 跟踪状态及查询计划；后续 OKX `completed` 扫描复用该观察和里程碑账本，不重新启动窗口。
 - 两类任务均执行成交量门槛、GMGN KOL 数量筛选、叙事生成、重试和 OdAIly 挂后台写入逻辑。开始等待 Grok 或进入写作前，按任务 CA 和链查询 GMGN `token info`；`wallet_tags_stat.renowned_wallets` 为 0 时以 `kol_count_zero` 结束且不写作，字段缺失、响应地址不匹配或请求失败均作为暂时错误重试，不能按 0 处理。查询成功的 KOL 数量与 GMGN X/官网链接随任务审计保存，重试时复用同一任务的结果。成交量门槛按 `24小时成交量 / 市值` 动态计算：市值不高于 30 万美元要求至少 50%，市值达到 300 万美元及以上要求至少 20%，中间区间按市值线性插值。Dexscreener 的所选交易对、流动性、市值和成交量字段写入原始快照；Meme 链路不调用 OKX 签名详情接口，也不执行 OKX 风险字段拦截。
 - 挂后台接口成功后同步写入信息流插件本地 store，使用 `meme_digest` 类型进入高频区并显示“Meme挂后台”；信息流写入失败只记录日志，不回滚已经成功的挂后台结果。
-- 叙事生成保留版本化快速材料契约。通过 KOL 筛选后，Telegram、CA 搜索到的 FxTwitter 帖子、GMGN 链接账号最多 20 条近期原创帖、GMGN 提供的网站页面正文和 FOMO Thesis 均由 `odaily-official` 本地 collector 并行收集；账号帖子和网页材料分别审计来源 URL、账号/站点名及最终采用状态。两个栏目额外请求 Grok Bot Routine，非阻塞等待回调最多 15 分钟；失败或超时仍用其他材料写稿。OdAIly 使用 `gpt-6-luna` 在同一次调用内判断 `pure_meme/celebrity_anchor/app_linked` 并完成写作；正文固定为两句：第一句说明代币关联的梗、人物、事件或项目，第二句以 `核心逻辑是` 开头并说明炒作逻辑。类型只作内部分类，不决定段落模板。采用 GMGN 链接账号或网站内容时，按“信源@账号表示”或“信源站点表示”归因，不把未经材料确认的账号身份写成项目方。Grok继续作为跨平台研究材料，优先合并 `what_it_is`、`primary_narrative`、`narratives`、`evidence` 和 `caveats`；只有结构化字段缺失时才使用旧版 `summary`。正文按逻辑整合，不强制添加Grok独立段落，也不重复主叙事。FxTwitter 不启动浏览器。网页抓取仅允许公开 HTTP(S) 页面，限制响应大小、跳转次数和超时。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存材料、调用诊断和最终判断；真正没有可用叙事时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
+- 叙事生成保留版本化快速材料契约。通过 KOL 筛选后，Telegram、CA 搜索到的 FxTwitter 帖子、GMGN 链接账号最多 20 条近期原创帖、GMGN 提供的网站页面正文和 FOMO Thesis 均由 `odaily-official` 本地 collector 并行收集；账号帖子和网页材料分别审计来源 URL、账号/站点名及最终采用状态。两个栏目额外请求 Grok Bot Routine，非阻塞等待回调最多5分钟，自动回调登记同步有效5分钟；超时后仍用其他材料写稿。OdAIly 使用 `gpt-6-luna` 在同一次调用内判断 `pure_meme/celebrity_anchor/app_linked` 并完成写作；正文固定为两句：第一句说明代币关联的梗、人物、事件或项目，第二句以 `核心逻辑是` 开头并说明炒作逻辑。类型只作内部分类，不决定段落模板。采用 GMGN 链接账号或网站内容时，按“信源@账号表示”或“信源站点表示”归因，不把未经材料确认的账号身份写成项目方。Grok继续作为跨平台研究材料，优先合并 `what_it_is`、`primary_narrative`、`narratives`、`evidence` 和 `caveats`；只有结构化字段缺失时才使用旧版 `summary`。正文按逻辑整合，不强制添加Grok独立段落，也不重复主叙事。FxTwitter 不启动浏览器。网页抓取仅允许公开 HTTP(S) 页面，限制响应大小、跳转次数和超时。FOMO 只在合格叙事任务中取得同一把浏览器锁、以独立运行时 profile 启动一次有头 Chromium、调用页面自有模块后立即关闭；它不能和 OKX 发现浏览器重叠。FOMO 当前只会在有头 Chromium 中初始化 Privy runtime，`odaily-meme-scanner.service` 已提供 Xvfb；不要把 `MEME_FOMO_HEADLESS` 设为 `true`，否则页面只渲染外壳且材料请求会失败。程序确定性将 `据Odaily Meme速递监测，` 放在正文最前面并添加固定免责声明。FOMO Thesis 采用时只能在正文写成“某信源表示”，不能泄露产品或作者身份。叙事审计复用 `jobs.narrative_json` 保存材料、调用诊断和最终判断；真正没有可用叙事时任务才标记为 `no_usable_narrative`，网络、模型、JSON 或校验异常记录具体阶段并进入 `retry_wait`。
 
 ## 今日热门Meme
 
@@ -34,7 +34,7 @@
 
 `daily_hot_chains`保存初始化，`daily_hot_scans`保存最近7天扫描结果，`daily_hot_seen`永久保存入选身份。`jobs.trigger_kind=daily_hot`复用任务及挂后台链路，不写入Meme速递观察/里程碑账本。两个栏目独立去重。首次达标后没有可用叙事也不重新产生候选，普通暂时错误沿用队列重试。
 
-Grok请求用 `meme_grok_jobs` 按任务trigger_key保存；插入显式列名，兼容观测系统为表增加的本地计数列。回调校验与接收复用API服务。等待期间任务为 `retry_wait/reason=grok_pending`，不消耗普通重试次数，不阻塞候选扫描或其他写作。提交前先持久化请求，重启不重复投递不确定的请求。明确失败/超时后以其他材料降级，不补改已写稿。
+Grok请求用 `meme_grok_jobs` 按任务trigger_key保存，并持久化 webhook 回执中的 `runUuid`，与 OdAIly `request_id` 并列审计；相同 CA 的不同 trigger_key 保持独立请求。回调校验与接收复用API服务。等待期间任务为 `retry_wait/reason=grok_pending`，不消耗普通重试次数，不阻塞候选扫描或其他写作，最多等待5分钟，自动回调登记也有效5分钟。回调匹配 request ID、一次性 token 和 CA；EVM 地址大小写不敏感，其他地址大小写敏感。相同结果重复提交按幂等成功处理，其他拒收返回安全原因码，应用日志仅记录 request ID 与原因码，不记录 token、回调路径或结果正文。提交前先持久化请求，重启不重复投递不确定的请求。明确失败/超时后以其他材料降级，不补改已写稿。
 
 运行配置：`GROK_ROUTINE_CREDENTIALS_FILE`默认 `data/config/grok.txt`，私有文件权限600；Webhook URL优先 `GROK_ROUTINE_WEBHOOK_URL`，其次凭证文件url；`GROK_CALLBACK_BASE_URL`默认既有公网回调入口；`MEME_HOT_GMGN_REQUEST_INTERVAL`默认35秒。GMGN沿用CLI私有认证。扫描线程与现有scanner同服务运行；`meme scan --once`也执行到期的热门扫描。上游失败记录扫描诊断，下一小时重试。
 
@@ -58,7 +58,7 @@ Meme速递：{chain}上{symbol}社群热议中，市值{market_cap}万美元
 
 ## 数据接口
 
-- 接口：`GET /console/meme/get?column=digest|daily_hot|all`。省略column保留旧接口全部记录行为，前端两个标签分别传digest/daily_hot；服务端先筛选栏目再限制条数。
+- 接口：`GET /console/meme/get?column=digest|daily_hot|kol_zero|all`。省略column保留旧接口全部记录行为；前两个标签分别传digest/daily_hot，并在服务端只保留已生成正文或叙事失败的任务；`kol_zero` 汇总两个栏目中 `reason=kol_count_zero` 的任务。所有视图均在限制条数前筛选。
 - 鉴权：复用控制台本地操作者 Bearer session。
 - 数据源：OdAIly 的 `data/processed/meme_scanner.sqlite3`，接口以 SQLite `mode=ro` 打开。
 - PostgreSQL 迁移中，`ODAILY_STORAGE_BACKEND=postgres` 时控制台从本机 PostgreSQL `meme` schema 的原生只读查询读取任务、Telegram 候选和活跃行情；Telegram watcher 的提及去重与候选写入也使用同一 schema。Scanner 队列、Grok 请求和今日热门写入路径尚未切换前，不应删除或清理原 SQLite 数据库。

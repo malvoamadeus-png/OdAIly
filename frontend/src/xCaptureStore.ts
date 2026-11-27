@@ -2274,7 +2274,7 @@ export type MemeDashboard = {
   last_error: string | null;
 };
 
-export async function getMemeDashboard(column: 'digest' | 'daily_hot' = 'digest'): Promise<MemeDashboard> {
+export async function getMemeDashboard(column: 'digest' | 'daily_hot' | 'kol_zero' = 'digest'): Promise<MemeDashboard> {
   return consoleApiGet<MemeDashboard>(`/console/meme/get?column=${column}`);
 }
 

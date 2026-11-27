@@ -107,7 +107,7 @@ def test_callback_store_requires_registration_token_and_matching_ca(tmp_path: Pa
     assert grok_callback.store_callback_result(tmp_path, "job-test", token, raw)
     assert grok_callback.load_callback_result(tmp_path, "job-test", token) == result
     assert grok_callback.load_callback_result(tmp_path, "job-test", "wrong-token") is None
-    assert not grok_callback.store_callback_result(tmp_path, "job-test", token, raw)
+    assert grok_callback.store_callback_result(tmp_path, "job-test", token, raw)
 
 
 def test_run_accepts_cursor_webhook_receipt_without_claiming_result(tmp_path, capsys) -> None:

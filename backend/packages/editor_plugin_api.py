@@ -1089,7 +1089,7 @@ class EditorPluginNewsGenService:
 
     def get_meme_dashboard(self, actor: AuthenticatedEditor, column: str = "all") -> dict[str, Any]:
         del actor
-        if column not in {"all", "digest", "daily_hot"}:
+        if column not in {"all", "digest", "daily_hot", "kol_zero"}:
             raise EditorPluginApiError(HTTPStatus.BAD_REQUEST, "Unknown Meme column")
         return self.meme_dashboard_store.dashboard(column=column)
 
@@ -1863,10 +1863,11 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
             except ValueError:
                 content_length = 0
             from packages.meme_scanner.grok_callback import (
+                CALLBACK_FAILURE_MESSAGES,
                 MAX_CALLBACK_BYTES,
                 MAX_REGISTRATION_BYTES,
                 create_callback_registration,
-                store_callback_result,
+                store_callback_result_with_reason,
             )
 
             if content_length < 1 or content_length > MAX_CALLBACK_BYTES:
@@ -1897,9 +1898,14 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.CREATED, {"ok": True, "token": token})
                 return
 
-            stored = store_callback_result(callback_root, parts[3], parts[4], raw_body)
-            if not stored:
-                self._send_json(HTTPStatus.CONFLICT, {"ok": False, "message": "Invalid, expired, or duplicate result"})
+            failure_code = store_callback_result_with_reason(callback_root, parts[3], parts[4], raw_body)
+            if failure_code is not None:
+                print(f"[odaily] grok_callback_rejected request_id={parts[3]} code={failure_code}", flush=True)
+                self._send_json(HTTPStatus.CONFLICT, {
+                    "ok": False,
+                    "code": failure_code,
+                    "message": CALLBACK_FAILURE_MESSAGES.get(failure_code, "Callback result was rejected."),
+                })
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, "received": True})
             return

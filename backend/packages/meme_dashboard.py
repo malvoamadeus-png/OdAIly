@@ -199,10 +199,24 @@ class MemeDashboardStore:
         return connection
 
     def dashboard(self, *, limit: int = 100, column: str = "all") -> dict[str, Any]:
-        if column not in {"all", "digest", "daily_hot"}:
+        if column not in {"all", "digest", "daily_hot", "kol_zero"}:
             raise ValueError("Invalid Meme column")
-        column_clause = {"all": "1=1", "digest": "trigger_kind != 'daily_hot'",
-                         "daily_hot": "trigger_kind = 'daily_hot'"}[column]
+        column_clause = {
+            "all": "1=1",
+            "digest": "trigger_kind != 'daily_hot'",
+            "daily_hot": "trigger_kind = 'daily_hot'",
+            "kol_zero": "1=1",
+        }[column]
+        if column == "kol_zero":
+            visibility_clause = "COALESCE(reason, '') = 'kol_count_zero'"
+        elif column in {"digest", "daily_hot"}:
+            visibility_clause = """COALESCE(reason, '') <> 'kol_count_zero' AND (
+                COALESCE(content, '') <> '' OR COALESCE(reason, '') = 'no_usable_narrative'
+                OR COALESCE(reason, '') LIKE 'narrative_%'
+                OR COALESCE(reason, '') LIKE 'transient_exhausted:narrative_%'
+            )"""
+        else:
+            visibility_clause = "1=1"
         generated_at = datetime.now(UTC).isoformat()
         if load_storage_settings().backend == "postgres":
             try:
@@ -240,7 +254,8 @@ class MemeDashboardStore:
                     SELECT id,address,trigger_key,trigger_level,payload_json,trigger_kind,
                            queued_at,status,reason,title,content,updated_at,{_job_columns(connection)}
                     FROM jobs
-                    WHERE ({column_clause}) AND COALESCE(reason, '') NOT IN ('volume_gate_failed', 'tg_market_cap_gate_failed', 'unsupported_chain', 'token_not_found')
+                    WHERE ({column_clause}) AND ({visibility_clause})
+                      AND COALESCE(reason, '') NOT IN ('volume_gate_failed', 'tg_market_cap_gate_failed', 'unsupported_chain', 'token_not_found')
                     ORDER BY updated_at DESC,id DESC
                     LIMIT ?
                     """,

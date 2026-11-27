@@ -98,8 +98,8 @@ def test_grok_roundtrip_is_nonblocking_and_durable(tmp_path, monkeypatch):
 def test_grok_timeout_is_ready_for_other_sources(tmp_path):
     store, token, job = make_job(tmp_path)
     grok_jobs.setup(store.conn)
-    store.conn.execute('INSERT INTO meme_grok_jobs VALUES (?,?,?,?,NULL,NULL)',
-        (job['trigger_key'], 'test-timeout', (datetime.now(UTC) - timedelta(minutes=16)).isoformat(), 'pending'))
+    store.conn.execute('INSERT INTO meme_grok_jobs(trigger_key,request_id,started_at,state,result_json,error) VALUES (?,?,?,?,NULL,NULL)',
+        (job['trigger_key'], 'test-timeout', (datetime.now(UTC) - timedelta(minutes=6)).isoformat(), 'pending'))
     store.conn.commit()
     with patch.object(grok_jobs, 'get_paths', return_value=SimpleNamespace(runtime_dir=tmp_path)):
         ready, audit = grok_jobs.prepare(store, job, token)
