@@ -536,8 +536,8 @@ class PostgresMemeStore:
         elif column in {"digest", "daily_hot"}:
             visibility_sql = """COALESCE(reason, '') <> 'kol_count_zero' AND (
                 COALESCE(content, '') <> '' OR COALESCE(reason, '') = 'no_usable_narrative'
-                OR COALESCE(reason, '') LIKE 'narrative_%'
-                OR COALESCE(reason, '') LIKE 'transient_exhausted:narrative_%'
+                OR COALESCE(reason, '') LIKE 'narrative_%%'
+                OR COALESCE(reason, '') LIKE 'transient_exhausted:narrative_%%'
             )"""
         else:
             visibility_sql = "TRUE"
