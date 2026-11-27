@@ -16,7 +16,7 @@ from .models import AI_SOURCE, PipelineRecord, TaskRecord
 PublisherProfileKey = Literal["regular", "ai_source"]
 PublisherRuleKind = Literal["allow", "deny"]
 PublisherDecision = Literal["pass", "reject"]
-CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 6
+CURRENT_PUBLISHER_RULE_CONFIG_VERSION = 7
 
 
 class PublisherDecisionResult(BaseModel):
@@ -151,11 +151,16 @@ DEFAULT_REGULAR_ALLOW_RULES = [
     PublisherRule(
         id="allow_crypto_product_launch",
         name="产品发布 / 升级 / 上线",
-        description="放行 Crypto 相关产品、功能、代币、协议、交易服务、钱包、链上应用的发布、升级、上线或开放使用。",
+        description=(
+            "只放行有明确事实支撑的重大 Crypto 产品、协议或基础设施发布/升级。正文应说明具体机制或功能、"
+            "适用用户/资产范围、上线状态或时间，以及对交易准入、用户资金风险、市场流动性/结构、费用或广泛用户使用"
+            "产生的实质影响。已有产品的页面、操作、跟踪、订单类型等常规功能改进，单一资产的小范围支持，以及 APR、"
+            "积分、奖励等促销权益不属于重大产品变化。仅称“即将推出”而没有机制、范围、时间或影响信息时，不满足本规则。"
+        ),
         enabled=True,
         examples=[
-            "某交易所上线某代币现货交易",
-            "某钱包推出链上支付新功能",
+            "某主流协议正式启用改变抵押与清算规则的升级，并说明生效范围",
+            "某交易平台上线全新的链上衍生品市场，并说明交易机制和开放范围",
         ],
     ),
     PublisherRule(
@@ -463,6 +468,22 @@ DEFAULT_REGULAR_DENY_RULES = [
         ],
     ),
     PublisherRule(
+        id="deny_routine_project_product_update",
+        name="项目方常规产品功能更新",
+        description=(
+            "排除项目方或产品运营方围绕已有自有产品发布的常规功能、体验和流程调整，不论项目知名度。包括 UI/页面、"
+            "操作流程、仓位或持仓跟踪、限价单/订单类型、单一资产或交易对支持等小范围更新；APR、积分、奖励、未成交奖励"
+            "等促销性权益本身不能提升新闻价值。项目方身份、核心生态名或“正式支持/现已开放”等措辞不能自动放行。"
+            "若正文明确证明变化会广泛影响交易准入、用户资金风险、协议机制、市场流动性/结构或费用，或属于具有上述影响的"
+            "重大新品上线，则不按本规则排除，但仍须满足产品通过规则的事实要求。"
+        ),
+        enabled=True,
+        examples=[
+            "Pendle 现支持 CapApp YT-stcUSD 买入限价单，并提供未成交 APR",
+            "Aave Pro 杠杆仓位支持随时调整，用户可在 Leverage 页面跟踪",
+        ],
+    ),
+    PublisherRule(
         id="deny_niche_tradfi_product_move",
         name="小众传统金融产品异动",
         description=(
@@ -643,6 +664,8 @@ def build_publisher_rule_prompt(
             "- reason 不要只复述“通过规则/排除规则/模型判断”，不要写内部原因码，不要写逐步推理过程。",
             "- 不允许凭常识脑补主体重要性。只有正文直接给出高重要性证据，或主体明显属于国家级监管、央行、头部交易基础设施、头部稳定币/ETF/托管/核心公链基金会等系统性主体时，才可按高重要主体理解。",
             "- 对牌照、审批、合作、组织动向、产品更新等公司新闻，若主体看起来是中小或长尾实体，且正文没有明确写出其市场地位、用户规模、资产规模、监管层级、覆盖范围或系统性影响，默认按 routine company update 处理并 reject。",
+            "- 项目方围绕已有自有产品发布的常规页面、操作、跟踪、订单类型或单一资产支持更新，不论项目知名度都必须按排除规则判断；APR、积分和奖励等促销权益本身不是重大产品变化。",
+            "- 产品发布/升级/上线通过规则必须有正文事实说明具体机制、适用范围、上线状态或时间及实质影响；只有“即将推出”等无细节预告时不得 pass。",
             "- 关键组织的关键人物不能只按人物或机构名放行。只有正式政策动作、监管动作、产品/市场结构变化、明确影响利率或资产负债表的政策信号，才可按重要事件理解；组建工作组、研究框架、内部审查、专家名单、方法论讨论默认 reject。",
             "- 高管离职不按公司名自动放行。创始人、CEO、实际控制人、主席、核心基金会负责人变动可进入重大动向判断；CFO、COO、销售/分销/业务负责人等离任默认 reject，除非正文明确证明影响核心产品、上市进程、监管资格、托管/清算安全或广泛用户资产。",
             "- 对观点类内容，必须同时满足：高重要主体、直接 Crypto/监管/市场结构相关、含具体新信息/新动作/新数据；三者缺一即 reject。",

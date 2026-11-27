@@ -22,7 +22,7 @@ from packages.common.heartbeat import HeartbeatThrottle
 from packages.common.source_exclusions import SourceExclusionMatcher
 from packages.local_pipeline.client import LocalPipelineClient
 
-from .client import FXTwitterClient, has_context_reference
+from .client import FXTwitterClient, has_context_reference, is_link_only_candidate
 from .models import CaptureRunStats, TimelineAttempt, TweetCandidate, XCaptureAccount, XCaptureSettings
 from .repository import XCaptureRepository, utc_now
 
@@ -737,6 +737,8 @@ class XCaptureWorker:
                 "freshness_window_seconds": self.freshness_window_seconds,
                 "ignored_stale_count": 0,
                 "ignored_stale_tweet_ids": [],
+                "ignored_link_only_count": 0,
+                "ignored_link_only_tweet_ids": [],
             },
         )
 
@@ -798,10 +800,18 @@ class XCaptureWorker:
         new_count = 0
         ignored_stale_count = 0
         ignored_stale_tweet_ids: list[str] = []
+        ignored_link_only_count = 0
+        ignored_link_only_tweet_ids: list[str] = []
         detail_errors: dict[str, str] = {}
         remembered_seen: list[str] = []
         for candidate in candidates:
             if candidate.tweet_id not in unseen:
+                continue
+            if is_link_only_candidate(candidate):
+                if self.repository.mark_seen(account, candidate.tweet_id, seeded=False):
+                    ignored_link_only_count += 1
+                    ignored_link_only_tweet_ids.append(candidate.tweet_id)
+                remembered_seen.append(candidate.tweet_id)
                 continue
             record = self._record_from_candidate(account, candidate, detail_errors)
             if not is_fresh_record(
@@ -855,6 +865,8 @@ class XCaptureWorker:
                 "freshness_window_seconds": self.freshness_window_seconds,
                 "ignored_stale_count": ignored_stale_count,
                 "ignored_stale_tweet_ids": ignored_stale_tweet_ids,
+                "ignored_link_only_count": ignored_link_only_count,
+                "ignored_link_only_tweet_ids": ignored_link_only_tweet_ids,
             },
         )
 

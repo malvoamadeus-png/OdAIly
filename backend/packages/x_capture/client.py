@@ -161,6 +161,8 @@ def _find_articles(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 QUOTE_KEYS = ("quote", "quoted_tweet", "quote_tweet", "quoted_status")
 QUOTE_ID_KEYS = ("quote_id", "quoted_tweet_id", "quoted_status_id")
+LINK_ONLY_URL_PATTERN = re.compile(r"(?:https?://|www\.)[^\s<>()]+", re.IGNORECASE)
+LINK_ONLY_TRAILING_PUNCTUATION = " \t\r\n.,;:!?，。；：！？、()[]{}<>【】（）［］｛｝\"'“”‘’"
 
 
 def has_context_reference(payload: dict[str, Any]) -> bool:
@@ -272,6 +274,18 @@ def candidate_from_fxtwitter(payload: dict[str, Any]) -> TweetCandidate | None:
         media_urls=_media_urls(payload),
         raw_payload=payload,
     )
+
+
+def is_link_only_candidate(candidate: TweetCandidate) -> bool:
+    if candidate.media_urls or _find_articles(candidate.raw_payload):
+        return False
+
+    matches = list(LINK_ONLY_URL_PATTERN.finditer(candidate.text))
+    if len(matches) != 1:
+        return False
+
+    remaining_text = LINK_ONLY_URL_PATTERN.sub("", candidate.text).strip(LINK_ONLY_TRAILING_PUNCTUATION)
+    return not remaining_text
 
 
 _ORIGINAL_REQUESTS_GET = requests.get

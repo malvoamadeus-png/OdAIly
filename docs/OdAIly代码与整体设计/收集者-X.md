@@ -43,6 +43,8 @@ worker 启动时加载配置。运行中不再保留专门的数据库监听连�
 
 创建 `tasks` 前会调用统一源头排除匹配器：普通 X 内容检查 `x` 路径，标记为 AI信源的 X 账号同时检查 `x` 与 `ai_source`。X tweet 文本作为标题类文本参与匹配，`match_target = title` 与 `all` 对 X 当前输入等效；不检查 URL。命中后直接 mark seen，不创建任务、不提交本地流水线，也不写命中日志、标题、审计或计数。
 
+新帖进入详情抓取前会单独检查当前帖正文：正文仅含一条 HTTP(S) 或 `www.` 链接、没有其他文字，且没有媒体或 X Article 时，直接 mark seen，不抓取详情/引用链、不创建任务、不提交本地流水线。判定不读取引用链内容，因此“文字帖 A + 只带链接并引用 A 的帖子 B”只处理 A；正文还含说明文字，或帖子带媒体/Article 时仍按正常流程处理。轮次元数据记录 `ignored_link_only_count` 和 `ignored_link_only_tweet_ids`。
+
 每条抓到的 X 内容在通过基础去重与时效检查后，写入：
 
 - `tasks.source = 'x'`
