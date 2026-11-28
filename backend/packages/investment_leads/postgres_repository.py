@@ -416,7 +416,10 @@ class InvestmentLeadPostgresRepository:
                 )
                 return cursor.rowcount == 1
 
-    def dashboard_rows(self, *, usage_date: datetime, derive_prompt_version: str) -> dict[str, Any]:
+    def dashboard_rows(
+        self, *, usage_date: datetime, derive_prompt_version: str,
+        playbook_prompt_version: str = "investment_leads_playbook_v1",
+    ) -> dict[str, Any]:
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
             account = connection.execute(
                 "SELECT COUNT(*) AS total,COUNT(*) FILTER(WHERE investment_leads_enabled) AS enabled "
@@ -440,32 +443,50 @@ class InvestmentLeadPostgresRepository:
             oldest = [str(row["oldest"]) for row in [*tasks, *searches]
                       if row["status"] in {"pending", "processing"} and row["oldest"]]
             usage_by_kind = {str(row["kind"]): row for row in usage}
-            visible = "EXISTS(SELECT 1 FROM investment_lead_revisions q WHERE q.lead_id=l.id AND q.prompt_version IN ('investment_leads_derive_v4',%s))"
-            active = connection.execute(f"SELECT COUNT(*) AS n FROM investment_leads l WHERE l.status='active' AND {visible}", (derive_prompt_version,)).fetchone()["n"]
-            unlocated = connection.execute(f"SELECT COUNT(*) AS n FROM investment_leads l WHERE l.status='unlocated' AND {visible}", (derive_prompt_version,)).fetchone()["n"]
+            visible = "EXISTS(SELECT 1 FROM investment_lead_revisions q WHERE q.lead_id=l.id AND q.prompt_version IN ('investment_leads_derive_v4',%s,%s))"
+            active = connection.execute(
+                f"SELECT COUNT(*) AS n FROM investment_leads l WHERE l.status='active' AND {visible}",
+                (derive_prompt_version, playbook_prompt_version),
+            ).fetchone()["n"]
+            unlocated = connection.execute(
+                f"SELECT COUNT(*) AS n FROM investment_leads l WHERE l.status='unlocated' AND {visible}",
+                (derive_prompt_version, playbook_prompt_version),
+            ).fetchone()["n"]
+            playbooks = connection.execute(
+                f"SELECT COUNT(*) AS n FROM investment_leads l WHERE l.playbook_json <> '{{}}'::jsonb AND {visible}",
+                (derive_prompt_version, playbook_prompt_version),
+            ).fetchone()["n"]
             return {"account": account, "tasks": tasks, "searches": searches, "usage": usage,
                     "meta": meta, "counts": counts, "identity_counts": identity_counts,
                     "oldest": min(oldest) if oldest else None, "usage_by_kind": usage_by_kind,
                     "input_tokens": sum(int(row["input_tokens"] or 0) for row in usage),
                     "output_tokens": sum(int(row["output_tokens"] or 0) for row in usage),
-                    "active": int(active or 0), "unlocated": int(unlocated or 0)}
+                    "active": int(active or 0), "unlocated": int(unlocated or 0), "playbooks": int(playbooks or 0)}
 
     def list_leads_rows(
         self, *, cutoff: datetime, query: str, account: str, unlocated_only: bool,
         impact: str, offset: int, limit: int, derive_prompt_version: str,
+        mode: str = "", playbook_prompt_version: str = "investment_leads_playbook_v1",
     ) -> tuple[int, list[dict[str, Any]]]:
         clauses = ["l.last_substantive_at>=%s", "EXISTS(SELECT 1 FROM investment_lead_revisions q "
-                   "WHERE q.lead_id=l.id AND q.prompt_version IN ('investment_leads_derive_v4',%s))"]
-        params: list[Any] = [cutoff, derive_prompt_version]
+                   "WHERE q.lead_id=l.id AND q.prompt_version IN ('investment_leads_derive_v4',%s,%s))"]
+        params: list[Any] = [cutoff, derive_prompt_version, playbook_prompt_version]
         if unlocated_only:
             clauses.append("l.status='unlocated'")
+        if mode and mode != "all":
+            if mode == "playbook":
+                clauses.append("l.playbook_json <> '{}'::jsonb")
+            elif mode == "standard":
+                clauses.append("l.playbook_json = '{}'::jsonb")
+            else:
+                raise ValueError("不支持的投资线索模式筛选")
         if impact:
             if impact not in {"high", "medium", "low", "unknown"}:
                 raise ValueError("不支持的预期影响筛选")
             clauses.append("EXISTS(SELECT 1 FROM jsonb_array_elements(l.assets_json) a WHERE COALESCE(a->'assessment'->>'impact','unknown')=%s)")
             params.append(impact)
         if query.strip():
-            clauses.append("LOWER(l.subject || ' ' || l.driver_logic || ' ' || l.conditions || ' ' || l.assets_json::text) LIKE %s")
+            clauses.append("LOWER(l.subject || ' ' || l.driver_logic || ' ' || l.conditions || ' ' || l.assets_json::text || ' ' || l.playbook_json::text) LIKE %s")
             params.append(f"%{query.strip().lower()}%")
         if account.strip():
             clauses.append("EXISTS(SELECT 1 FROM investment_lead_sources s JOIN investment_lead_observations o "
@@ -509,7 +530,7 @@ class InvestmentLeadPostgresRepository:
                     "revisions": [dict(row) for row in revisions], "searches": [dict(row) for row in searches]}
 
     def retry_failed(self, *, stage: str, limit: int, now: datetime) -> int:
-        if stage and stage not in {"scan", "derive", "supplement", "identity_search"}:
+        if stage and stage not in {"scan", "derive", "supplement", "playbook", "identity_search"}:
             raise ValueError("不支持的投资线索任务阶段")
         safe_limit = min(500, max(1, int(limit)))
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
@@ -556,6 +577,7 @@ class InvestmentLeadPostgresRepository:
         self, *, job: dict[str, Any], leads: list[dict[str, Any]], related_events: list[dict[str, Any]],
         actual_model: str, fallback_reason: str | None, input_tokens: int, output_tokens: int,
         now: datetime, derive_prompt_version: str, identity_prompt_version: str, max_attempts: int,
+        playbook_prompt_version: str = "investment_leads_playbook_v1",
     ) -> bool:
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
             with connection.transaction():
@@ -582,18 +604,154 @@ class InvestmentLeadPostgresRepository:
                 linked = {(job["material_id"], job["content_hash"])}
                 linked.update((str(item.get("material_id") or ""), str(item.get("content_hash") or "")) for item in related_events)
                 result_count = 0
+                has_high_impact = False
                 for lead in leads:
                     sources = [pair for pair in linked if pair[0] in (lead.get("source_material_ids") or [])]
                     if not sources:
                         sources = [(job["material_id"], job["content_hash"])]
                     self._save_lead(connection, lead, sources, actual_model, now, derive_prompt_version, identity_prompt_version)
                     result_count += 1
+                    for asset in lead.get("assets") or []:
+                        if isinstance(asset, dict) and isinstance(asset.get("assessment"), dict) and asset["assessment"].get("impact") == "high":
+                            has_high_impact = True
+                if has_high_impact and playbook_prompt_version:
+                    connection.execute(
+                        "INSERT INTO investment_lead_tasks(material_id,content_hash,stage,prompt_version,status,created_at,updated_at) "
+                        "VALUES(%s,%s,'playbook',%s,'pending',%s,%s) ON CONFLICT(material_id,content_hash,stage,prompt_version) DO NOTHING",
+                        (job["material_id"], job["content_hash"], playbook_prompt_version, now, now),
+                    )
                 status = "succeeded" if result_count else "no_candidate"
                 connection.execute(
                     "UPDATE investment_lead_tasks SET status=%s,lease_until=NULL,next_attempt_at=NULL,actual_model=%s,"
                     "fallback_reason=%s,input_tokens=%s,output_tokens=%s,last_error=NULL,completed_at=%s,updated_at=%s "
                     "WHERE id=%s AND attempts=%s AND lease_until=%s AND lease_until>%s",
                     (status, actual_model, fallback_reason, input_tokens, output_tokens, now, now,
+                     job["id"], job["attempts"], job["lease_until"], now),
+                )
+                return True
+
+    def claim_playbook_batch(
+        self, *, now: datetime, lease: timedelta, limit: int, max_attempts: int,
+    ) -> list[dict[str, Any]]:
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            with connection.transaction():
+                rows = connection.execute(
+                    "SELECT t.id,t.material_id,t.content_hash,t.attempts,t.prompt_version,e.classification,e.playbook_trigger,"
+                    "e.subject,e.action,e.change_object,e.event_time,e.impact_relations_json,e.summary,e.reason,m.payload_json "
+                    "FROM investment_lead_tasks t JOIN investment_lead_events e "
+                    "ON e.material_id=t.material_id AND e.content_hash=t.content_hash "
+                    "AND e.id=(SELECT MAX(latest.id) FROM investment_lead_events latest "
+                    "WHERE latest.material_id=t.material_id AND latest.content_hash=t.content_hash) "
+                    "JOIN investment_lead_materials m ON m.material_id=t.material_id AND m.content_hash=t.content_hash "
+                    "WHERE t.stage='playbook' AND t.status='pending' AND t.attempts<%s "
+                    "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=%s) "
+                    "AND EXISTS(SELECT 1 FROM investment_lead_observations o JOIN hottopic_accounts a "
+                    "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=t.material_id "
+                    "AND o.content_hash=t.content_hash AND a.status='followed' AND a.investment_leads_enabled) "
+                    "ORDER BY t.created_at,t.id FOR UPDATE OF t SKIP LOCKED LIMIT %s",
+                    (max_attempts, now, max(1, limit)),
+                ).fetchall()
+                jobs = []
+                for row in rows:
+                    updated = connection.execute(
+                        "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=%s,updated_at=%s "
+                        "WHERE id=%s AND status='pending' RETURNING attempts,lease_until",
+                        (now + lease, now, row["id"]),
+                    ).fetchone()
+                    if updated is not None:
+                        job = dict(row)
+                        job.update(updated)
+                        jobs.append(job)
+                return jobs
+
+    def save_playbook_result(
+        self, *, job: dict[str, Any], lead: dict[str, Any], playbook: dict[str, Any],
+        actual_model: str, fallback_reason: str | None, input_tokens: int, output_tokens: int,
+        now: datetime, playbook_prompt_version: str,
+    ) -> bool:
+        from uuid import uuid4
+
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    "SELECT 1 FROM investment_lead_tasks WHERE id=%s AND stage='playbook' AND status='processing' "
+                    "AND attempts=%s AND lease_until=%s AND lease_until>%s FOR UPDATE",
+                    (job["id"], job["attempts"], job["lease_until"], now),
+                ).fetchone()
+                if current is None:
+                    return False
+                eligible = connection.execute(
+                    "SELECT EXISTS(SELECT 1 FROM investment_lead_observations o JOIN hottopic_accounts a "
+                    "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=%s AND o.content_hash=%s "
+                    "AND a.status='followed' AND a.investment_leads_enabled) AS eligible",
+                    (job["material_id"], job["content_hash"]),
+                ).fetchone()["eligible"]
+                if not eligible:
+                    connection.execute(
+                        "UPDATE investment_lead_tasks SET status='ignored',lease_until=NULL,completed_at=%s,updated_at=%s "
+                        "WHERE id=%s AND attempts=%s AND lease_until=%s AND lease_until>%s",
+                        (now, now, job["id"], job["attempts"], job["lease_until"], now),
+                    )
+                    return False
+                existing_source = connection.execute(
+                    "SELECT l.* FROM investment_leads l JOIN investment_lead_sources s ON s.lead_id=l.id "
+                    "WHERE s.material_id=%s AND s.content_hash=%s ORDER BY l.last_substantive_at DESC LIMIT 1 FOR UPDATE OF l",
+                    (job["material_id"], job["content_hash"]),
+                ).fetchone()
+                assets = lead.get("assets") or []
+                claims = lead.get("source_claims") or []
+                sources = [(job["material_id"], job["content_hash"])]
+                if existing_source is not None:
+                    lead_id = str(existing_source["id"])
+                    old_assets = existing_source["assets_json"] if isinstance(existing_source["assets_json"], list) else []
+                    merged_assets = list(old_assets)
+                    seen_names = {str(a.get("name") or "").casefold() for a in merged_assets if isinstance(a, dict)}
+                    for asset in assets:
+                        if isinstance(asset, dict) and str(asset.get("name") or "").casefold() not in seen_names:
+                            merged_assets.append(asset)
+                            seen_names.add(str(asset.get("name") or "").casefold())
+                    revision = int(existing_source["revision"]) + 1
+                    status = "active" if merged_assets else str(existing_source["status"] or "active")
+                    connection.execute(
+                        "UPDATE investment_leads SET assets_json=%s,playbook_json=%s,last_substantive_at=%s,"
+                        "revision=%s,status=%s,updated_at=%s WHERE id=%s",
+                        (Jsonb(merged_assets), Jsonb(playbook), now, revision, status, now, lead_id),
+                    )
+                    connection.execute(
+                        "INSERT INTO investment_lead_revisions(lead_id,revision,subject,driver_logic,conditions,assets_json,"
+                        "source_claims_json,source_materials_json,actual_model,prompt_version,created_at) "
+                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (lead_id, revision, existing_source["subject"], lead["driver_logic"], lead.get("conditions") or existing_source["conditions"],
+                         Jsonb(merged_assets), Jsonb(existing_source["source_claims_json"]), Jsonb(sources),
+                         actual_model, playbook_prompt_version, now),
+                    )
+                else:
+                    lead_id = str(uuid4())
+                    status = "active" if assets else "unlocated"
+                    connection.execute(
+                        "INSERT INTO investment_leads(id,subject,driver_logic,conditions,assets_json,source_claims_json,playbook_json,"
+                        "first_seen_at,last_substantive_at,revision,status,created_at,updated_at) "
+                        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,1,%s,%s,%s)",
+                        (lead_id, lead["subject"], lead["driver_logic"], lead.get("conditions") or "",
+                         Jsonb(assets), Jsonb(claims), Jsonb(playbook), now, now, status, now, now),
+                    )
+                    connection.execute(
+                        "INSERT INTO investment_lead_revisions(lead_id,revision,subject,driver_logic,conditions,assets_json,"
+                        "source_claims_json,source_materials_json,actual_model,prompt_version,created_at) "
+                        "VALUES(%s,1,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (lead_id, lead["subject"], lead["driver_logic"], lead.get("conditions") or "",
+                         Jsonb(assets), Jsonb(claims), Jsonb(sources), actual_model, playbook_prompt_version, now),
+                    )
+                    connection.execute(
+                        "INSERT INTO investment_lead_sources(lead_id,material_id,content_hash,role,created_at) "
+                        "VALUES(%s,%s,%s,'evidence',%s) ON CONFLICT(lead_id,material_id,content_hash,role) DO NOTHING",
+                        (lead_id, job["material_id"], job["content_hash"], now),
+                    )
+                connection.execute(
+                    "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,actual_model=%s,"
+                    "fallback_reason=%s,input_tokens=%s,output_tokens=%s,last_error=NULL,completed_at=%s,updated_at=%s "
+                    "WHERE id=%s AND attempts=%s AND lease_until=%s AND lease_until>%s",
+                    (actual_model, fallback_reason, input_tokens, output_tokens, now, now,
                      job["id"], job["attempts"], job["lease_until"], now),
                 )
                 return True
@@ -735,15 +893,19 @@ class InvestmentLeadPostgresRepository:
                     "UPDATE investment_lead_materials SET completeness=%s WHERE material_id=%s AND content_hash=%s",
                     ("incomplete" if classification == "incomplete" else "complete", job["material_id"], job["content_hash"]),
                 )
+                playbook_trigger = str(result.get("playbook_trigger") or "")
+                if playbook_trigger not in {"anomaly_behavior", "major_catalyst"} or classification != "driver_candidate":
+                    playbook_trigger = ""
                 connection.execute(
-                    "INSERT INTO investment_lead_events(material_id,content_hash,classification,subject,action,change_object,event_time,"
+                    "INSERT INTO investment_lead_events(material_id,content_hash,classification,playbook_trigger,subject,action,change_object,event_time,"
                     "impact_relations_json,summary,reason,actual_model,prompt_version,created_at) "
-                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                     "ON CONFLICT(material_id,content_hash,prompt_version) DO UPDATE SET classification=EXCLUDED.classification,"
+                    "playbook_trigger=EXCLUDED.playbook_trigger,"
                     "subject=EXCLUDED.subject,action=EXCLUDED.action,change_object=EXCLUDED.change_object,event_time=EXCLUDED.event_time,"
                     "impact_relations_json=EXCLUDED.impact_relations_json,summary=EXCLUDED.summary,reason=EXCLUDED.reason,"
                     "actual_model=EXCLUDED.actual_model,created_at=EXCLUDED.created_at",
-                    (job["material_id"], job["content_hash"], classification, result.get("subject") or "",
+                    (job["material_id"], job["content_hash"], classification, playbook_trigger, result.get("subject") or "",
                      result.get("action") or "", result.get("change_object") or "", result.get("event_time") or "",
                      Jsonb(result.get("impact_relations") or []), result.get("summary") or "", result.get("reason") or "",
                      actual_model, job["prompt_version"], now),
@@ -761,6 +923,12 @@ class InvestmentLeadPostgresRepository:
                         "INSERT INTO investment_lead_tasks(material_id,content_hash,stage,prompt_version,status,created_at,updated_at) "
                         "VALUES(%s,%s,'derive',%s,'pending',%s,%s) ON CONFLICT(material_id,content_hash,stage,prompt_version) DO NOTHING",
                         (job["material_id"], job["content_hash"], job["derive_prompt_version"], now, now),
+                    )
+                if playbook_trigger and job.get("playbook_prompt_version"):
+                    connection.execute(
+                        "INSERT INTO investment_lead_tasks(material_id,content_hash,stage,prompt_version,status,created_at,updated_at) "
+                        "VALUES(%s,%s,'playbook',%s,'pending',%s,%s) ON CONFLICT(material_id,content_hash,stage,prompt_version) DO NOTHING",
+                        (job["material_id"], job["content_hash"], job["playbook_prompt_version"], now, now),
                     )
                 if classification == "incomplete":
                     row = connection.execute(

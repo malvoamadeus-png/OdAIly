@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS investment_lead_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   material_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
-  stage TEXT NOT NULL CHECK(stage IN ('scan','derive','supplement')),
+  stage TEXT NOT NULL CHECK(stage IN ('scan','derive','supplement','playbook')),
   prompt_version TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN ('pending','processing','succeeded','no_candidate','needs_material','budget_paused','ignored','failed','expired')),
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS investment_lead_events (
   material_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   classification TEXT NOT NULL CHECK(classification IN ('driver_candidate','composable','no_candidate','incomplete')),
+  playbook_trigger TEXT NOT NULL DEFAULT '',
   subject TEXT NOT NULL DEFAULT '',
   action TEXT NOT NULL DEFAULT '',
   change_object TEXT NOT NULL DEFAULT '',
@@ -103,6 +104,7 @@ CREATE TABLE IF NOT EXISTS investment_leads (
   assets_json TEXT NOT NULL DEFAULT '[]',
   source_claims_json TEXT NOT NULL DEFAULT '[]',
   replay_json TEXT NOT NULL DEFAULT '{}',
+  playbook_json TEXT NOT NULL DEFAULT '{}',
   first_seen_at TEXT NOT NULL,
   last_substantive_at TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 1,
@@ -147,7 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_investment_sources_material
   ON investment_lead_sources(material_id,content_hash);
 CREATE TABLE IF NOT EXISTS investment_lead_usage (
   usage_date TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('scan','derive','search','supplement')),
+  kind TEXT NOT NULL CHECK(kind IN ('scan','derive','search','supplement','playbook')),
   calls INTEGER NOT NULL DEFAULT 0,
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -187,6 +189,11 @@ def ensure_schema(connection: sqlite3.Connection, *, capture_started_at: str) ->
     lead_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_leads)")}
     if "replay_json" not in lead_columns:
         connection.execute("ALTER TABLE investment_leads ADD COLUMN replay_json TEXT NOT NULL DEFAULT '{}'")
+    if "playbook_json" not in lead_columns:
+        connection.execute("ALTER TABLE investment_leads ADD COLUMN playbook_json TEXT NOT NULL DEFAULT '{}'")
+    event_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_lead_events)")}
+    if "playbook_trigger" not in event_columns:
+        connection.execute("ALTER TABLE investment_lead_events ADD COLUMN playbook_trigger TEXT NOT NULL DEFAULT ''")
     meta_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_leads_meta)").fetchall()}
     if "model_error" not in meta_columns:
         connection.execute("ALTER TABLE investment_leads_meta ADD COLUMN model_error TEXT")

@@ -26,6 +26,7 @@ import {
   type XAgentMarketSentimentItem,
   type XAgentInvestmentLead,
   type XAgentInvestmentLeadDetail,
+  type XAgentInvestmentLeadPlaybook,
   type XAgentInvestmentLeadsStatus,
   type XAgentOperationAdvice,
   type XAgentPage,
@@ -380,6 +381,164 @@ function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; o
 
 const investmentLevel = (value?: string): string => ({ high: '强', medium: '中', low: '弱', unknown: '待判断' }[value || 'unknown'] || '待判断');
 
+function playbookStageShort(stage: string): string {
+  const map: Record<string, string> = {
+    第一阶段: 'S1',
+    第二阶段: 'S2',
+    第三阶段: 'S3',
+    第四阶段: 'S4',
+    第五阶段: 'S5',
+    第六阶段: 'S6',
+    第七阶段: 'S7',
+  };
+  return map[stage] || stage;
+}
+
+function playbookDirectionTone(direction: string): string {
+  if (direction === '做空') return 'short';
+  if (direction === '做多') return 'long';
+  if (direction === '反向套利') return 'reversal';
+  return 'watch';
+}
+
+function playbookStatusTone(status: string): string {
+  if (status === '部分发生') return 'partial';
+  if (status === '等待开市') return 'market-open';
+  if (status === '重点验证') return 'verify';
+  if (status === '等待机会') return 'opportunity';
+  if (status === '已发生') return 'done';
+  return 'unconfirmed';
+}
+
+function PlaybookDetailSection({ playbook }: { playbook: XAgentInvestmentLeadPlaybook }) {
+  const triggerLabel = playbook.trigger_type === 'anomaly_behavior' ? '反常博弈' : '多阶段催化';
+  const primary = playbook.primary_bet;
+  const motive = playbook.hidden_motive;
+  const cp = playbook.counterparty_simulation;
+  const risk = playbook.risk_and_invalidation;
+  const citations = playbook.research_citations || [];
+
+  return (
+    <div className="playbookDetail">
+      <section className="playbookSection">
+        <div className="playbookSectionHead">
+          <h3>逻辑与对手盘推演</h3>
+          <span className={`playbookBadge playbookBadge--${playbook.trigger_type === 'anomaly_behavior' ? 'anomaly' : 'catalyst'}`}>深度剧本 · {triggerLabel}</span>
+        </div>
+        <div className="playbookLogicGrid">
+          {primary?.target && (
+            <div className="playbookLogicBox playbookLogicBox--primary">
+              <div className="playbookLogicLabel">
+                <strong>主攻第一枪</strong>
+                <span className={`playbookDir playbookDir--${playbookDirectionTone(primary.direction || '')}`}>{primary.direction || '关注'} {primary.target}{primary.ticker ? ` (${primary.ticker})` : ''}</span>
+              </div>
+              {primary.asymmetry_pitch && <p>{primary.asymmetry_pitch}</p>}
+            </div>
+          )}
+          {(motive?.most_lethal_hypothesis || motive?.why_not_normal) && (
+            <div className="playbookLogicBox">
+              <div className="playbookLogicLabel"><strong>反常归因与隐藏动机脑洞</strong></div>
+              {motive.most_lethal_hypothesis && <p>{motive.most_lethal_hypothesis}</p>}
+              {motive.why_not_normal && <p className="playbookSubtext">反常依据：{motive.why_not_normal}</p>}
+            </div>
+          )}
+          {(cp?.crowd_blindspot || cp?.market_maker_reaction || cp?.short_hunter_angle) && (
+            <div className="playbookLogicBox">
+              <div className="playbookLogicLabel"><strong>无新公告前的对手盘推演</strong></div>
+              {cp.crowd_blindspot && <p><em>大众盲区：</em>{cp.crowd_blindspot}</p>}
+              {cp.market_maker_reaction && <p><em>做市商/对手方抢跑：</em>{cp.market_maker_reaction}</p>}
+              {cp.short_hunter_angle && <p><em>聪明资金狙击路径：</em>{cp.short_hunter_angle}</p>}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {playbook.staged_playbook.length > 0 && (
+        <section className="playbookSection">
+          <div className="playbookSectionHead">
+            <h3>分阶段传导剧本</h3>
+            <span className="playbookSubMeta">按定价速度与传导距离排序</span>
+          </div>
+          <div className="playbookTableWrap">
+            <table className="playbookTable">
+              <thead>
+                <tr>
+                  <th>阶段</th>
+                  <th>方向与标的</th>
+                  <th>当前状态</th>
+                  <th>偏远传导逻辑</th>
+                </tr>
+              </thead>
+              <tbody>
+                {playbook.staged_playbook.map((row, index) => (
+                  <tr key={`${row.stage}:${index}`}>
+                    <td className="playbookTableStage">
+                      <strong>{row.stage}</strong>
+                      <span>{row.opportunity}</span>
+                    </td>
+                    <td className="playbookTableTargets">
+                      <span className={`playbookDir playbookDir--${playbookDirectionTone(row.direction)}`}>{row.direction}</span>
+                      <div className="playbookTargetList">
+                        {row.targets.map((target) => <span className="playbookTargetChip" key={target}>{target}</span>)}
+                      </div>
+                    </td>
+                    <td className="playbookTableStatus">
+                      <span className={`playbookStatus playbookStatus--${playbookStatusTone(row.current_status)}`}>{row.current_status}</span>
+                    </td>
+                    <td className="playbookTableLogic">{row.logic}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {(risk || playbook.assumption_boundary || citations.length > 0) && (
+        <section className="playbookSection">
+          <div className="playbookSectionHead">
+            <h3>试错纪律与事实边界</h3>
+            {risk?.trade_nature && <span className="playbookSubMeta">{risk.trade_nature}</span>}
+          </div>
+          <div className="playbookRiskGrid">
+            {risk && (
+              <div className="playbookRiskBox">
+                {risk.time_stop_loss && <p><strong>时间止损：</strong>{risk.time_stop_loss}</p>}
+                {risk.thesis_stop_loss && <p><strong>逻辑止损：</strong>{risk.thesis_stop_loss}</p>}
+                {(risk.confirming_signals || []).length > 0 && (
+                  <div className="playbookSignals">
+                    <strong>放大确认信号：</strong>
+                    <ul>
+                      {(risk.confirming_signals || []).map((signal, index) => <li key={index}>{signal}</li>)}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="playbookBoundaryBox">
+              {playbook.assumption_boundary && <p><strong>事实与脑洞边界：</strong>{playbook.assumption_boundary}</p>}
+              {citations.length > 0 && (
+                <div className="playbookCitations">
+                  <strong>事前公开检索出处（{citations.length}）：</strong>
+                  <ul>
+                    {citations.map((item) => (
+                      <li key={item.url}>
+                        <a href={item.url} target="_blank" rel="noreferrer">
+                          {item.title || item.url} <ExternalLink size={12} />
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 function InvestmentLeadDetail({
   detail,
   loading,
@@ -392,10 +551,12 @@ function InvestmentLeadDetail({
   if (loading) return <div className="xAgentDetailLoading">正在读取线索来源…</div>;
   if (error) return <div className="notice error xAgentDetailNotice"><CircleAlert size={16} /> {error}</div>;
   if (!detail) return <div className="xAgentDetailLoading">线索详情暂不可用。</div>;
+  const playbook = detail.playbook?.mode === 'deep_playbook' ? detail.playbook : null;
   return (
     <div className="xAgentInvestmentDetail">
-      {detail.conditions && <p><strong>条件：</strong>{detail.conditions}</p>}
-      {detail.assets.map((asset) => asset.assessment && <section className="investmentAssessment" key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
+      {playbook && <PlaybookDetailSection playbook={playbook} />}
+      {!playbook && detail.conditions && <p><strong>条件：</strong>{detail.conditions}</p>}
+      {!playbook && detail.assets.map((asset) => asset.assessment && <section className="investmentAssessment" key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
         <p>预期影响：{investmentLevel(asset.assessment.impact)} · 判断把握：{investmentLevel(asset.assessment.confidence)}</p>
         {asset.assessment.expectation_change && <p><strong>可能改变的预期：</strong>{asset.assessment.expectation_change}</p>}
         {asset.assessment.market_acceptance && <p><strong>市场为何可能接受或忽略：</strong>{asset.assessment.market_acceptance}</p>}
@@ -499,6 +660,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
   const [investmentQuery, setInvestmentQuery] = useState('');
   const [investmentAccount, setInvestmentAccount] = useState('');
   const [investmentImpact, setInvestmentImpact] = useState('');
+  const [investmentMode, setInvestmentMode] = useState<'' | 'playbook' | 'standard'>('');
   const [investmentOffset, setInvestmentOffset] = useState(0);
   const [investmentReload, setInvestmentReload] = useState(0);
   const [investmentSelectedId, setInvestmentSelectedId] = useState<string | null>(null);
@@ -678,6 +840,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           query: investmentQuery.trim(),
           account: investmentAccount.trim(),
           impact: investmentImpact,
+          mode: investmentMode,
           offset: investmentOffset,
           limit: PAGE_SIZE,
         }),
@@ -695,7 +858,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
       });
     }, 200);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentImpact, investmentOffset, investmentReload]);
+  }, [tab, investmentWindow, investmentQuery, investmentAccount, investmentImpact, investmentMode, investmentOffset, investmentReload]);
 
   useEffect(() => {
     if (tab !== 'investment_leads' || !investmentSelectedId) {
@@ -1111,37 +1274,99 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           <Metric label="已开启账号" value={investmentStatus.accounts.investmentLeadsEnabled} onClick={() => openSubscribedAccounts('investment_leads')} />
           <Metric label="待扫描" value={investmentStatus.tasks.pendingScan + investmentStatus.tasks.processingScan} />
           <Metric label="待推导" value={investmentStatus.tasks.pendingDerive + investmentStatus.tasks.processingDerive} />
+          <Metric label="待深度剧本" value={(investmentStatus.tasks.pendingPlaybook ?? 0) + (investmentStatus.tasks.processingPlaybook ?? 0)} />
           <Metric label="待定位搜索" value={investmentStatus.tasks.pendingIdentitySearch + investmentStatus.tasks.processingIdentitySearch} />
           <Metric label="已保留线索" value={investmentStatus.results.active} />
+          <Metric label="深度剧本" value={investmentStatus.results.playbooks ?? 0} onClick={() => { setInvestmentMode((current) => current === 'playbook' ? '' : 'playbook'); setInvestmentOffset(0); setInvestmentSelectedId(null); }} />
           <Metric label="失败任务" value={investmentStatus.tasks.failed} warning={investmentStatus.tasks.failed > 0} />
-          <div className="xAgentInvestmentUsage"><strong>今日用量</strong><span>输入 {investmentStatus.usage.inputTokens.toLocaleString()} tokens</span><span>推导 {investmentStatus.usage.deriveCalls.toLocaleString()} 次</span><span>身份搜索 {investmentStatus.usage.searchCalls.toLocaleString()} 次</span></div>
+          <div className="xAgentInvestmentUsage"><strong>今日用量</strong><span>输入 {investmentStatus.usage.inputTokens.toLocaleString()} tokens</span><span>推导 {investmentStatus.usage.deriveCalls.toLocaleString()} 次</span><span>深度剧本 {(investmentStatus.usage.playbookCalls ?? 0).toLocaleString()} 次</span><span>身份搜索 {investmentStatus.usage.searchCalls.toLocaleString()} 次</span></div>
           <div className="xAgentInvestmentStatusFoot"><span>采集起点 {formatTime(investmentStatus.captureStartedAt)}</span><span>Worker {formatTime(investmentStatus.workerLastSeenAt)}</span><span>最早待处理 {formatTime(investmentStatus.tasks.oldestPendingAt)}</span><span>待补充 {investmentStatus.tasks.pendingSupplement + investmentStatus.tasks.processingSupplement}</span><span>材料不完整 {investmentStatus.tasks.incomplete}</span><span>补充读取 {investmentStatus.usage.supplementReads} 次</span><span>身份搜索未定位 {investmentStatus.tasks.identitySearchUnresolved}</span><span>身份搜索失败 {investmentStatus.tasks.identitySearchFailures}</span></div>
         </div>}
         {investmentStatus?.modelError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> 模型路由不可用：{investmentStatus.modelError}</div>}
         {investmentError && <div className="notice error xAgentInlineNotice"><CircleAlert size={17} /> {investmentError}</div>}
         <div className="xAgentFilters xAgentResultFilters xAgentInvestmentFilters">
-          <label><Search size={16} /><input value={investmentQuery} onChange={(event) => { setInvestmentQuery(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="搜索驱动、标的或行业" /></label>
+          <label><Search size={16} /><input value={investmentQuery} onChange={(event) => { setInvestmentQuery(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="搜索驱动、标的、协议或美股" /></label>
           <input value={investmentAccount} onChange={(event) => { setInvestmentAccount(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} placeholder="账号筛选，如 @username" aria-label="账号筛选" />
+          <select value={investmentMode} onChange={(event) => { setInvestmentMode(event.target.value as '' | 'playbook' | 'standard'); setInvestmentOffset(0); setInvestmentSelectedId(null); }} aria-label="线索模式筛选"><option value="">全部线索（混排）</option><option value="playbook">仅看深度剧本</option><option value="standard">仅看常规线索</option></select>
           <select value={investmentImpact} onChange={(event) => { setInvestmentImpact(event.target.value); setInvestmentOffset(0); setInvestmentSelectedId(null); }} aria-label="预期影响筛选"><option value="">全部影响</option><option value="high">影响强</option><option value="medium">影响中</option><option value="low">影响弱</option><option value="unknown">影响待判断</option></select>
           <select value={investmentWindow} onChange={(event) => { setInvestmentWindow(event.target.value as '24h' | '7d' | '30d'); setInvestmentOffset(0); setInvestmentSelectedId(null); }}>{INVESTMENT_WINDOW_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select>
         </div>
         <div className="xAgentInvestmentList">
-          {!investmentLoading && investmentItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前筛选没有投资线索。</span><div className="inlineActions"><button className="secondaryButton compact" type="button" onClick={() => { setInvestmentWindow('30d'); setInvestmentOffset(0); }}>查看近 30 天</button><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('investment_leads')}>查看 {investmentStatus?.accounts.investmentLeadsEnabled ?? dashboard?.accounts.investmentLeadsEnabled ?? 0} 个订阅账号</button></div></div>}
+          {!investmentLoading && investmentItems.length === 0 && <div className="emptyState xAgentResultEmpty"><span>当前筛选没有投资线索。</span><div className="inlineActions"><button className="secondaryButton compact" type="button" onClick={() => { setInvestmentMode(''); setInvestmentWindow('30d'); setInvestmentOffset(0); }}>查看近 30 天</button><button className="secondaryButton compact" type="button" onClick={() => openSubscribedAccounts('investment_leads')}>查看 {investmentStatus?.accounts.investmentLeadsEnabled ?? dashboard?.accounts.investmentLeadsEnabled ?? 0} 个订阅账号</button></div></div>}
           {investmentItems.map((item) => {
             const selected = investmentSelectedId === item.id;
-            return <article className={selected ? 'xAgentInvestmentCard active' : 'xAgentInvestmentCard'} key={item.id}>
+            const playbook = item.playbook?.mode === 'deep_playbook' ? item.playbook : null;
+            return <article className={`${selected ? 'xAgentInvestmentCard active' : 'xAgentInvestmentCard'}${playbook ? ' xAgentInvestmentCard--playbook' : ''}`} key={item.id}>
               <button className="xAgentInvestmentCardButton" type="button" aria-expanded={selected} onClick={() => setInvestmentSelectedId((current) => current === item.id ? null : item.id)}>
-                <span className="xAgentInvestmentCardHeading"><strong>{item.subject}</strong><span>{item.status === 'unlocated' ? '标的待定位' : `${item.assets.length} 个标的`}</span><time>{formatTime(item.lastSubstantiveAt)}</time></span>
-                <span className="xAgentInvestmentLogic">{item.driverLogic}</span>
-                <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span className="investmentAsset" key={`${asset.name}:${asset.ticker}`}>
-                  <span className="investmentAssetName"><strong>{asset.name}</strong>{asset.ticker && <span className="investmentTicker">{asset.ticker}</span>}</span>
-                  <span className="investmentAssetTag">{asset.direction}</span>
-                  {asset.driver_type && <span className="investmentAssetTag">{asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}</span>}
-                  <span className={`investmentImpact investmentImpact--${asset.assessment?.impact || 'unknown'}`}><span>预期影响</span><strong>{investmentLevel(asset.assessment?.impact)}</strong></span>
-                  <span className="investmentConfidence"><span>判断把握</span><strong>{investmentLevel(asset.assessment?.confidence)}</strong></span>
-                </span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                {playbook ? (
+                  <>
+                    <span className="playbookCardHeader">
+                      <span className="playbookBadgeGroup">
+                        <span className={`playbookBadge playbookBadge--${playbook.trigger_type === 'anomaly_behavior' ? 'anomaly' : 'catalyst'}`}>
+                          深度剧本 · {playbook.trigger_type === 'anomaly_behavior' ? '反常博弈' : '多阶段催化'}
+                        </span>
+                        <span className="playbookMetaTag">高思考 · 公开检索</span>
+                        {playbook.risk_and_invalidation?.trade_nature && <span className="playbookMetaTag">{playbook.risk_and_invalidation.trade_nature}</span>}
+                      </span>
+                      <time>{formatTime(item.lastSubstantiveAt)}</time>
+                    </span>
+                    <span className="playbookHeadline">{playbook.headline_call}</span>
+                    <span className="playbookPreviewBox">
+                      {(playbook.primary_bet?.target || playbook.hidden_motive?.most_lethal_hypothesis) && (
+                        <span className="playbookPreviewRow">
+                          <strong className="playbookPreviewKey">核心逻辑</strong>
+                          <span>
+                            {playbook.primary_bet?.target && (
+                              <em className={`playbookInlineDir playbookInlineDir--${playbookDirectionTone(playbook.primary_bet.direction || '')}`}>
+                                {playbook.primary_bet.direction} {playbook.primary_bet.target}
+                              </em>
+                            )}
+                            {playbook.hidden_motive?.most_lethal_hypothesis || playbook.primary_bet?.asymmetry_pitch}
+                          </span>
+                        </span>
+                      )}
+                      {playbook.counterparty_simulation?.market_maker_reaction && (
+                        <span className="playbookPreviewRow">
+                          <strong className="playbookPreviewKey">对手盘抢跑</strong>
+                          <span>{playbook.counterparty_simulation.market_maker_reaction}</span>
+                        </span>
+                      )}
+                      {playbook.risk_and_invalidation?.time_stop_loss && (
+                        <span className="playbookPreviewRow playbookPreviewRow--stop">
+                          <strong className="playbookPreviewKey">时间止损</strong>
+                          <span>{playbook.risk_and_invalidation.time_stop_loss}</span>
+                        </span>
+                      )}
+                    </span>
+                    <span className="playbookStageStrip">
+                      {playbook.staged_playbook.map((stage, index) => (
+                        <span className={`playbookStagePill playbookStagePill--${playbookDirectionTone(stage.direction)}`} key={`${stage.stage}:${index}`}>
+                          <span className="playbookStageCode">{playbookStageShort(stage.stage)}</span>
+                          <strong>{stage.targets.slice(0, 2).join(' / ')}</strong>
+                          <span className={`playbookDir playbookDir--${playbookDirectionTone(stage.direction)}`}>{stage.direction}</span>
+                          <span className={`playbookStatus playbookStatus--${playbookStatusTone(stage.current_status)}`}>{stage.current_status}</span>
+                        </span>
+                      ))}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="xAgentInvestmentCardHeading"><strong>{item.subject}</strong><span>{item.status === 'unlocated' ? '标的待定位' : `${item.assets.length} 个标的`}</span><time>{formatTime(item.lastSubstantiveAt)}</time></span>
+                    <span className="xAgentInvestmentLogic">{item.driverLogic}</span>
+                    <span className="xAgentInvestmentAssets">{item.assets.length ? item.assets.map((asset) => <span className="investmentAsset" key={`${asset.name}:${asset.ticker}`}>
+                      <span className="investmentAssetName"><strong>{asset.name}</strong>{asset.ticker && <span className="investmentTicker">{asset.ticker}</span>}</span>
+                      <span className="investmentAssetTag">{asset.direction}</span>
+                      {asset.driver_type && <span className="investmentAssetTag">{asset.driver_type === 'theme' ? '题材驱动' : '经营驱动'}</span>}
+                      <span className={`investmentImpact investmentImpact--${asset.assessment?.impact || 'unknown'}`}><span>预期影响</span><strong>{investmentLevel(asset.assessment?.impact)}</strong></span>
+                      <span className="investmentConfidence"><span>判断把握</span><strong>{investmentLevel(asset.assessment?.confidence)}</strong></span>
+                    </span>) : <span>标的待定位：可继续调研驱动涉及的具体资产。</span>}</span>
+                  </>
+                )}
                 {item.replay?.label && <span className="xAgentInvestmentMeta">{item.replay.label} · 原帖 {formatTime(item.replay.sourcePostedAt)} · 分析更新 {formatTime(item.replay.importedAt)}</span>}
-                <span className="xAgentInvestmentMeta">来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}</span>
+                <span className="xAgentInvestmentMeta">
+                  {playbook ? `触发主体 ${item.subject} · 含 ${(playbook.research_citations || []).length} 份公开出处 · ` : ''}
+                  来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}
+                </span>
               </button>
               <InvestmentSourceControls accounts={item.accounts || ''} onChanged={() => {
                 void refreshDashboard();

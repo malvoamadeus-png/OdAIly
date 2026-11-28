@@ -57,3 +57,384 @@
   overflow-wrap: anywhere;
 }
 .xAgentInvestmentDetail .investmentAssessment > p strong { color: #34434c; }
+
+/* Deep Playbook cards (mixed in the same investment lead feed, visually highlighted) */
+.xAgentInvestmentCard--playbook {
+  border-left: 3px solid #d97706;
+  background: linear-gradient(180deg, #fffdf9 0%, #ffffff 36%);
+}
+
+.playbookCardHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.playbookBadgeGroup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.playbookBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.playbookBadge--anomaly {
+  border: 1px solid #f0b89e;
+  background: #fff1e8;
+  color: #b44318;
+}
+.playbookBadge--catalyst {
+  border: 1px solid #c3d0f7;
+  background: #eef3ff;
+  color: #2f4eb2;
+}
+
+.playbookMetaTag {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: #f1f4f6;
+  color: #536471;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.playbookHeadline {
+  display: block;
+  color: #19262e;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.55;
+  text-align: left;
+}
+
+.playbookPreviewBox {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #efe3d2;
+  border-radius: 8px;
+  background: #fffaf3;
+  text-align: left;
+}
+
+.playbookPreviewRow {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  color: #34434c;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.playbookPreviewRow--stop {
+  padding-top: 4px;
+  border-top: 1px dashed #eadcc8;
+  color: #6b4e24;
+  font-size: 12px;
+}
+
+.playbookPreviewKey {
+  color: #8a5614;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.playbookInlineDir {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 700;
+}
+.playbookInlineDir--short { background: #fdecea; color: #b42318; }
+.playbookInlineDir--long { background: #e8f7ef; color: #16794c; }
+.playbookInlineDir--reversal { background: #e8f2ff; color: #1d5bb8; }
+.playbookInlineDir--watch { background: #edf1f4; color: #526470; }
+
+.playbookStageStrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.playbookStagePill {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid #e1e8e5;
+  border-radius: 7px;
+  background: #f8faf9;
+  color: #24343d;
+  font-size: 12px;
+}
+.playbookStagePill--short { border-color: #f0c9c4; background: #fff7f6; }
+.playbookStagePill--long { border-color: #c2e3d2; background: #f4fbf7; }
+.playbookStagePill--reversal { border-color: #c8daf4; background: #f4f8ff; }
+
+.playbookStageCode {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #e7edf0;
+  color: #425460;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.playbookDir {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.playbookDir--short { background: #fdecea; color: #b42318; }
+.playbookDir--long { background: #e6f6ee; color: #147348; }
+.playbookDir--reversal { background: #e8f2ff; color: #1d5bb8; }
+.playbookDir--watch { background: #eef2f5; color: #576975; }
+
+.playbookStatus {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.playbookStatus--partial { background: #fff2dc; color: #9a5508; }
+.playbookStatus--market-open { background: #ecebff; color: #4338ca; }
+.playbookStatus--verify { background: #e8f2ff; color: #1d5bb8; }
+.playbookStatus--opportunity { background: #e6f6f4; color: #0f766e; }
+.playbookStatus--done { background: #e9eef1; color: #475864; }
+.playbookStatus--unconfirmed { background: #f2f4f6; color: #667783; }
+
+/* Expanded Deep Playbook briefing */
+.playbookDetail {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.playbookSection {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e2e8e5;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.playbookSectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.playbookSectionHead h3 {
+  margin: 0;
+  color: #1f2e37;
+  font-size: 14px;
+}
+
+.playbookSubMeta {
+  color: #637480;
+  font-size: 12px;
+}
+
+.playbookLogicGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.playbookLogicBox {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e7eeeb;
+  border-radius: 7px;
+  background: #f9fbfa;
+}
+.playbookLogicBox--primary {
+  border-color: #f0d0b4;
+  background: #fff9f2;
+}
+
+.playbookLogicLabel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: #24343d;
+  font-size: 13px;
+}
+
+.playbookLogicBox p {
+  margin: 0;
+  color: #34434c;
+  font-size: 13px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.playbookLogicBox p em {
+  color: #22323b;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.playbookSubtext {
+  color: #5b6d78 !important;
+  font-size: 12px !important;
+}
+
+.playbookTableWrap {
+  overflow-x: auto;
+}
+
+.playbookTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.playbookTable th,
+.playbookTable td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e8eeec;
+  text-align: left;
+  vertical-align: top;
+}
+
+.playbookTable th {
+  background: #f5f7f6;
+  color: #526470;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.playbookTableStage {
+  min-width: 130px;
+}
+.playbookTableStage strong {
+  display: block;
+  color: #1f2e37;
+  font-size: 13px;
+}
+.playbookTableStage span {
+  display: block;
+  margin-top: 2px;
+  color: #5b6d78;
+  font-size: 12px;
+}
+
+.playbookTableTargets {
+  min-width: 150px;
+}
+.playbookTargetList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+.playbookTargetChip {
+  display: inline-block;
+  padding: 2px 6px;
+  border: 1px solid #dce4e8;
+  border-radius: 4px;
+  background: #f8fafb;
+  color: #24343d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.playbookTableStatus {
+  white-space: nowrap;
+}
+
+.playbookTableLogic {
+  color: #34434c;
+  line-height: 1.6;
+  min-width: 240px;
+}
+
+.playbookRiskGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.playbookRiskBox,
+.playbookBoundaryBox {
+  display: grid;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.playbookRiskBox {
+  border: 1px solid #eed9b7;
+  background: #fffbf2;
+  color: #3b3527;
+}
+
+.playbookBoundaryBox {
+  border: 1px solid #dfe6ea;
+  background: #f6f8f9;
+  color: #465763;
+}
+
+.playbookRiskBox p,
+.playbookBoundaryBox p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.playbookSignals ul,
+.playbookCitations ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+
+.playbookCitations a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #2157a6;
+  text-decoration: none;
+  word-break: break-all;
+}
+.playbookCitations a:hover { text-decoration: underline; }
+
+@media (max-width: 720px) {
+  .playbookPreviewRow {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}

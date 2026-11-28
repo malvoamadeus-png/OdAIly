@@ -77,7 +77,7 @@ def test_investment_lead_worker_selects_postgres_backend(tmp_path, monkeypatch) 
             captured["repository"] = postgres_repository
 
         def process_once(self):
-            return {"scanned": 0, "derived": 0, "supplemented": 0, "identitySearched": 0}
+            return {"scanned": 0, "derived": 0, "playbooks": 0, "supplemented": 0, "identitySearched": 0}
 
         def close(self):
             pass
@@ -96,7 +96,7 @@ def test_investment_lead_schema_uses_native_versioned_migration(postgres_runtime
     from packages.investment_leads.postgres_schema import initialize_investment_leads_schema
     from psycopg.types.json import Jsonb
 
-    assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == (1,)
+    assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == (1, 2)
     assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == ()
 
     with connect_postgres(
@@ -237,7 +237,7 @@ def test_postgres_service_processes_scan_and_records_usage(postgres_runtime, inv
 
     repository = InvestmentLeadPostgresRepository(schema=investment_schema, settings=postgres_runtime)
     service = InvestmentLeadService(Path(tmp_path) / "unused.sqlite", analyzer=Analyzer(), postgres_repository=repository)
-    assert service.process_once() == {"scanned": 1, "derived": 0, "supplemented": 0, "identitySearched": 0}
+    assert service.process_once() == {"scanned": 1, "derived": 0, "playbooks": 0, "supplemented": 0, "identitySearched": 0}
     with connect_postgres(schema=investment_schema, application_name="odaily-investment-service-test", settings=postgres_runtime) as conn:
         task = conn.execute("SELECT status,actual_model,input_tokens,output_tokens FROM investment_lead_tasks WHERE stage='scan'").fetchone()
         assert task == {"status": "no_candidate", "actual_model": "test-model", "input_tokens": 12, "output_tokens": 3}

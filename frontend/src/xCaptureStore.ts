@@ -455,6 +455,47 @@ export type XAgentSubscriptionPatch = Partial<Pick<XAgentAccount,
   'hotTopicEnabled' | 'marketSentimentEnabled' | 'projectPromotionEnabled' | 'investmentLeadsEnabled'
 >>;
 
+export type XAgentInvestmentLeadPlaybookStage = {
+  stage: string;
+  opportunity: string;
+  direction: '做空' | '做多' | '反向套利' | '观察' | string;
+  targets: string[];
+  logic: string;
+  current_status: '已发生' | '部分发生' | '重点验证' | '等待开市' | '尚未确认' | '等待机会' | string;
+};
+
+export type XAgentInvestmentLeadPlaybook = {
+  mode: 'deep_playbook';
+  trigger_type: 'anomaly_behavior' | 'major_catalyst' | string;
+  headline_call: string;
+  primary_bet?: {
+    target?: string;
+    ticker?: string;
+    market?: string;
+    direction?: string;
+    asymmetry_pitch?: string;
+  };
+  hidden_motive?: {
+    most_lethal_hypothesis?: string;
+    why_not_normal?: string;
+  };
+  counterparty_simulation?: {
+    crowd_blindspot?: string;
+    market_maker_reaction?: string;
+    short_hunter_angle?: string;
+  };
+  staged_playbook: XAgentInvestmentLeadPlaybookStage[];
+  assumption_boundary?: string;
+  risk_and_invalidation?: {
+    trade_nature?: string;
+    confirming_signals?: string[];
+    thesis_stop_loss?: string;
+    time_stop_loss?: string;
+  };
+  research_citations?: Array<{ url: string; title: string }>;
+  research_summary?: string;
+};
+
 export type XAgentInvestmentLeadsStatus = {
   generatedAt: string;
   captureStartedAt: string;
@@ -466,6 +507,8 @@ export type XAgentInvestmentLeadsStatus = {
     processingScan: number;
     pendingDerive: number;
     processingDerive: number;
+    pendingPlaybook?: number;
+    processingPlaybook?: number;
     pendingSupplement: number;
     processingSupplement: number;
     pendingIdentitySearch: number;
@@ -477,8 +520,20 @@ export type XAgentInvestmentLeadsStatus = {
     incomplete: number;
     oldestPendingAt: string | null;
   };
-  results: { active: number; unlocated: number; scannedNoCandidate: number };
-  usage: { inputTokens: number; inputTokenBudget: number | null; scanCalls: number; deriveCalls: number; deriveCallBudget: number | null; supplementReads: number; supplementReadBudget: number | null; searchCalls: number; searchCallBudget: number | null; outputTokens: number };
+  results: { active: number; unlocated: number; playbooks?: number; scannedNoCandidate: number };
+  usage: {
+    inputTokens: number;
+    inputTokenBudget: number | null;
+    scanCalls: number;
+    deriveCalls: number;
+    deriveCallBudget: number | null;
+    playbookCalls?: number;
+    supplementReads: number;
+    supplementReadBudget: number | null;
+    searchCalls: number;
+    searchCallBudget: number | null;
+    outputTokens: number;
+  };
 };
 
 export type XAgentInvestmentLead = {
@@ -488,6 +543,7 @@ export type XAgentInvestmentLead = {
   conditions: string;
   assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional'; assessment?: { impact: 'high' | 'medium' | 'low' | 'unknown'; confidence: 'high' | 'medium' | 'low' | 'unknown'; expectation_change: string; market_acceptance: string; key_uncertainty: string; reconsider_if: string } }>;
   replay?: { label?: string; sourcePostedAt?: string; importedAt?: string };
+  playbook?: XAgentInvestmentLeadPlaybook | null;
   sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
   firstSeenAt: string;
   lastSubstantiveAt: string;
@@ -2551,6 +2607,7 @@ export async function listXAgentInvestmentLeads({
   account = '',
   unlocatedOnly = false,
   impact = '',
+  mode = '',
   offset = 0,
   limit = 50,
 }: {
@@ -2559,6 +2616,7 @@ export async function listXAgentInvestmentLeads({
   account?: string;
   unlocatedOnly?: boolean;
   impact?: string;
+  mode?: '' | 'all' | 'playbook' | 'standard';
   offset?: number;
   limit?: number;
 }): Promise<XAgentPage<XAgentInvestmentLead>> {
@@ -2568,6 +2626,7 @@ export async function listXAgentInvestmentLeads({
     account,
     unlocated_only: unlocatedOnly,
     impact,
+    mode,
     offset,
     limit,
   });
@@ -2581,7 +2640,7 @@ export async function getXAgentInvestmentLeadDetail(leadId: string): Promise<XAg
 }
 
 export async function retryXAgentInvestmentLeadJobs(
-  stage: 'scan' | 'derive' | '' = '',
+  stage: 'scan' | 'derive' | 'playbook' | '' = '',
   limit = 100,
 ): Promise<{ requeued: number }> {
   return consoleApiPost<{ requeued: number }>('/console/x-agent/investment-leads/retry-failed', {

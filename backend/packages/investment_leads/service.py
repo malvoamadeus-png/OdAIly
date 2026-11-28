@@ -21,9 +21,11 @@ from typing import Any, Callable, Iterable
 from .analysis import (
     DERIVE_PROMPT_VERSION,
     IDENTITY_SEARCH_PROMPT_VERSION,
+    PLAYBOOK_PROMPT_VERSION,
     SCAN_PROMPT_VERSION,
     InvestmentLeadAnalyzer,
     ModelOutput,
+    PlaybookOutput,
 )
 from .postgres_repository import InvestmentLeadPostgresRepository
 from .schema import ensure_schema
@@ -39,7 +41,7 @@ MAINTENANCE_CONTINUE_DELAY = timedelta(seconds=10)
 # Legacy results stay in storage but are not presented as passing the new gate.
 VISIBLE_LEAD_SQL = (
     "EXISTS(SELECT 1 FROM investment_lead_revisions quality_revision "
-    f"WHERE quality_revision.lead_id=l.id AND quality_revision.prompt_version IN ('investment_leads_derive_v4','{DERIVE_PROMPT_VERSION}'))"
+    f"WHERE quality_revision.lead_id=l.id AND quality_revision.prompt_version IN ('investment_leads_derive_v4','{DERIVE_PROMPT_VERSION}','{PLAYBOOK_PROMPT_VERSION}'))"
 )
 
 
@@ -349,6 +351,7 @@ class InvestmentLeadService:
         self.batch_size = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_SIZE", 10, 1, 20)
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
         self.derive_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY", 10, 1, 10)
+        self.playbook_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_PLAYBOOK_CONCURRENCY", 2, 1, 4)
         self.last_error: str | None = None
         self.analyzer_error: str | None = None
         if reader_only:
@@ -375,21 +378,26 @@ class InvestmentLeadService:
             self.postgres_repository.resume_budget_paused(now=now_dt)
             scanned = self._process_scan_batch_postgres(now)
             derived = self._process_derive_batch_postgres(now)
+            playbooks = self._process_playbook_batch_postgres(now)
             supplemented = self._process_one_supplement_postgres(now)
             identity_searched = self._process_one_identity_search_postgres(now)
             self.postgres_repository.maintain(now=now_dt, cutoff=now_dt - RETENTION)
-            return {"scanned": scanned, "derived": derived, "supplemented": supplemented, "identitySearched": identity_searched}
+            return {
+                "scanned": scanned, "derived": derived, "playbooks": playbooks,
+                "supplemented": supplemented, "identitySearched": identity_searched,
+            }
         self._heartbeat(now)
         self._reclaim_stale(now)
         self._resume_budget_paused(now)
         scan_count = self._process_scan_batch(now)
         derive_count = self._process_derive_batch(now)
+        playbook_count = self._process_playbook_batch(now)
         supplement_count = self._process_one_supplement(now)
         identity_search_count = self._process_one_identity_search(now)
         self._maintain(now)
         return {
-            "scanned": scan_count, "derived": derive_count, "supplemented": supplement_count,
-            "identitySearched": identity_search_count,
+            "scanned": scan_count, "derived": derive_count, "playbooks": playbook_count,
+            "supplemented": supplement_count, "identitySearched": identity_search_count,
         }
 
     def _process_scan_batch_postgres(self, now: str) -> int:
@@ -404,6 +412,7 @@ class InvestmentLeadService:
             return 0
         for job in jobs:
             job["derive_prompt_version"] = DERIVE_PROMPT_VERSION
+            job["playbook_prompt_version"] = PLAYBOOK_PROMPT_VERSION
         without_text = [job for job in jobs if not _has_readable_material(_decoded(job["payload_json"], {}))]
         for job in without_text:
             saved = repository.save_scan_result(
@@ -573,6 +582,92 @@ class InvestmentLeadService:
                     input_tokens=output.input_tokens, output_tokens=output.output_tokens, now=now_dt,
                     derive_prompt_version=DERIVE_PROMPT_VERSION,
                     identity_prompt_version=IDENTITY_SEARCH_PROMPT_VERSION, max_attempts=MAX_ATTEMPTS,
+                    playbook_prompt_version=PLAYBOOK_PROMPT_VERSION,
+                )
+                completed += 1
+            except Exception as exc:
+                self._fail_scan_batch_postgres([job], f"{type(exc).__name__}: {exc}", now_dt)
+                self.last_error = str(exc)
+                completed += 1
+        return completed
+
+    def _run_playbook_pipeline(
+        self, candidate: dict[str, Any], related_events: list[dict[str, Any]], trigger_type: str,
+    ) -> tuple[PlaybookOutput, int, int, int]:
+        assert self.analyzer is not None
+        ctx = self.analyzer.search_playbook_context(candidate)
+        pb = self.analyzer.generate_playbook(
+            candidate,
+            related_events,
+            context_text=ctx.summary_text,
+            citations=ctx.citations,
+            trigger_type=trigger_type,
+        )
+        total_in = ctx.input_tokens + pb.input_tokens
+        total_out = ctx.output_tokens + pb.output_tokens
+        total_calls = 1 + pb.calls
+        return pb, total_in, total_out, total_calls
+
+    def _process_playbook_batch_postgres(self, now: str) -> int:
+        repository = self.postgres_repository
+        assert repository is not None
+        now_dt = datetime.fromisoformat(now)
+        claim_limit = self.playbook_concurrency if self.analyzer is not None else 1
+        jobs = repository.claim_playbook_batch(
+            now=now_dt, lease=LEASE, limit=claim_limit, max_attempts=MAX_ATTEMPTS,
+        )
+        if not jobs:
+            return 0
+        if self.analyzer is None:
+            self._fail_scan_batch_postgres(jobs, self.analyzer_error or "X Agent 模型路由不可用", now_dt)
+            return len(jobs)
+        model_jobs: list[dict[str, Any]] = []
+        for job in jobs:
+            candidate = {
+                "material_id": job["material_id"], "content_hash": job["content_hash"],
+                "classification": job["classification"], "subject": job["subject"], "action": job["action"],
+                "change_object": job["change_object"], "event_time": job["event_time"],
+                "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
+                "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
+            }
+            related_events = self._related_events_postgres(candidate, job)
+            trigger_type = str(job.get("playbook_trigger") or "") or "major_catalyst"
+            model_jobs.append({
+                **job, "candidate": candidate, "related_events": related_events, "trigger_type": trigger_type,
+            })
+        outputs: dict[int, tuple[PlaybookOutput, int, int, int] | Exception] = {}
+        with ThreadPoolExecutor(max_workers=min(self.playbook_concurrency, len(model_jobs)),
+                                thread_name_prefix="investment-playbook") as executor:
+            futures = {
+                executor.submit(
+                    self._run_playbook_pipeline, job["candidate"], job["related_events"], job["trigger_type"],
+                ): int(job["id"])
+                for job in model_jobs
+            }
+            for future in as_completed(futures):
+                try:
+                    outputs[futures[future]] = future.result()
+                except Exception as exc:
+                    outputs[futures[future]] = exc
+        completed = 0
+        for job in model_jobs:
+            result = outputs[int(job["id"])]
+            if isinstance(result, Exception):
+                self._fail_scan_batch_postgres([job], f"{type(result).__name__}: {result}", now_dt)
+                self.last_error = str(result)
+                completed += 1
+                continue
+            pb, total_in, total_out, total_calls = result
+            try:
+                repository.record_usage(
+                    kind="playbook", usage_date=now_dt, calls=total_calls,
+                    input_tokens=total_in, output_tokens=total_out, updated_at=now_dt,
+                )
+                repository.save_playbook_result(
+                    job=job, lead=pb.lead, playbook=pb.playbook,
+                    actual_model=pb.actual_model, fallback_reason=pb.fallback_reason,
+                    input_tokens=total_in, output_tokens=total_out, now=now_dt,
+                    playbook_prompt_version=PLAYBOOK_PROMPT_VERSION,
                 )
                 completed += 1
             except Exception as exc:
@@ -844,18 +939,22 @@ class InvestmentLeadService:
                 "UPDATE investment_lead_materials SET completeness=? WHERE material_id=? AND content_hash=?",
                 ("incomplete" if classification == "incomplete" else "complete", job["material_id"], job["content_hash"]),
             )
+            playbook_trigger = str(result.get("playbook_trigger") or "")
+            if playbook_trigger not in {"anomaly_behavior", "major_catalyst"} or classification != "driver_candidate":
+                playbook_trigger = ""
             self.db.execute(
                 "INSERT INTO investment_lead_events("
-                "material_id,content_hash,classification,subject,action,change_object,event_time,impact_relations_json,"
+                "material_id,content_hash,classification,playbook_trigger,subject,action,change_object,event_time,impact_relations_json,"
                 "summary,reason,actual_model,prompt_version,created_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(material_id,content_hash,prompt_version) DO UPDATE SET "
-                "classification=excluded.classification,subject=excluded.subject,action=excluded.action,"
+                "classification=excluded.classification,playbook_trigger=excluded.playbook_trigger,"
+                "subject=excluded.subject,action=excluded.action,"
                 "change_object=excluded.change_object,event_time=excluded.event_time,"
                 "impact_relations_json=excluded.impact_relations_json,summary=excluded.summary,reason=excluded.reason,"
                 "actual_model=excluded.actual_model,created_at=excluded.created_at",
                 (
-                    job["material_id"], job["content_hash"], classification, result.get("subject") or "",
+                    job["material_id"], job["content_hash"], classification, playbook_trigger, result.get("subject") or "",
                     result.get("action") or "", result.get("change_object") or "", result.get("event_time") or "",
                     _json(result.get("impact_relations") or []), result.get("summary") or "", result.get("reason") or "",
                     output.actual_model, SCAN_PROMPT_VERSION, now,
@@ -873,6 +972,13 @@ class InvestmentLeadService:
                     "material_id,content_hash,stage,prompt_version,status,created_at,updated_at"
                     ") VALUES(?,?, 'derive', ?, 'pending', ?, ?)",
                     (job["material_id"], job["content_hash"], DERIVE_PROMPT_VERSION, now, now),
+                )
+            if playbook_trigger:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO investment_lead_tasks("
+                    "material_id,content_hash,stage,prompt_version,status,created_at,updated_at"
+                    ") VALUES(?,?, 'playbook', ?, 'pending', ?, ?)",
+                    (job["material_id"], job["content_hash"], PLAYBOOK_PROMPT_VERSION, now, now),
                 )
             if classification == "incomplete":
                 material_row = self.db.execute(
@@ -1228,12 +1334,23 @@ class InvestmentLeadService:
                         )
                         continue
                     result_count = 0
+                    has_high_impact = False
                     for lead in output.items:
                         lead_sources = [pair for pair in linked_materials if pair[0] in lead["source_material_ids"]]
                         if not lead_sources:
                             lead_sources = [(job["material_id"], job["content_hash"])]
                         lead_id = self._save_lead(lead, lead_sources, output, now)
                         result_count += bool(lead_id)
+                        for asset in lead.get("assets") or []:
+                            if isinstance(asset, dict) and isinstance(asset.get("assessment"), dict) and asset["assessment"].get("impact") == "high":
+                                has_high_impact = True
+                    if has_high_impact:
+                        self.db.execute(
+                            "INSERT OR IGNORE INTO investment_lead_tasks("
+                            "material_id,content_hash,stage,prompt_version,status,created_at,updated_at"
+                            ") VALUES(?,?, 'playbook', ?, 'pending', ?, ?)",
+                            (job["material_id"], job["content_hash"], PLAYBOOK_PROMPT_VERSION, now, now),
+                        )
                     status = "succeeded" if result_count else "no_candidate"
                     self.db.execute(
                         "UPDATE investment_lead_tasks SET status=?,lease_until=NULL,next_attempt_at=NULL,actual_model=?,"
@@ -1246,6 +1363,173 @@ class InvestmentLeadService:
                 self.last_error = str(exc)
                 processed += 1
         return processed
+
+    def _process_playbook_batch(self, now: str) -> int:
+        claim_limit = self.playbook_concurrency if self.analyzer is not None else 1
+        claimed: list[dict[str, Any]] = []
+        with self.db:
+            rows = self.db.execute(
+                "SELECT t.id,t.material_id,t.content_hash,t.attempts,e.classification,e.playbook_trigger,"
+                "e.subject,e.action,e.change_object,e.event_time,e.impact_relations_json,e.summary,e.reason,"
+                "m.payload_json,t.created_at "
+                "FROM investment_lead_tasks t JOIN investment_lead_events e "
+                "ON e.material_id=t.material_id AND e.content_hash=t.content_hash "
+                "AND e.id=(SELECT MAX(latest.id) FROM investment_lead_events latest "
+                "WHERE latest.material_id=t.material_id AND latest.content_hash=t.content_hash) "
+                "JOIN investment_lead_materials m ON m.material_id=t.material_id AND m.content_hash=t.content_hash "
+                "WHERE t.stage='playbook' AND t.status='pending' AND t.attempts<? "
+                "AND (t.next_attempt_at IS NULL OR t.next_attempt_at<=?) "
+                "AND EXISTS(SELECT 1 FROM investment_lead_observations o JOIN hottopic_accounts a "
+                "ON a.screen_name_lower=o.screen_name_lower WHERE o.material_id=t.material_id "
+                "AND o.content_hash=t.content_hash AND a.status='followed' AND a.investment_leads_enabled=1) "
+                "ORDER BY t.created_at,t.id LIMIT ?",
+                (MAX_ATTEMPTS, now, claim_limit),
+            ).fetchall()
+            if not rows:
+                return 0
+            for raw in rows:
+                job = dict(raw)
+                cursor = self.db.execute(
+                    "UPDATE investment_lead_tasks SET status='processing',attempts=attempts+1,lease_until=?,updated_at=? "
+                    "WHERE id=? AND status='pending' AND attempts<?",
+                    (_iso(_now() + LEASE), now, job["id"], MAX_ATTEMPTS),
+                )
+                if cursor.rowcount != 1:
+                    continue
+                job["attempts"] = int(job["attempts"]) + 1
+                claimed.append(job)
+        if self.analyzer is None:
+            self._fail_batch(claimed, self.analyzer_error or "X Agent 模型路由不可用", now)
+            return len(claimed)
+        if not claimed:
+            return 0
+        model_jobs: list[dict[str, Any]] = []
+        for job in claimed:
+            if not self._eligible(job["material_id"], job["content_hash"]):
+                self._mark_ignored(job["id"], now)
+                continue
+            candidate = {
+                "material_id": job["material_id"], "content_hash": job["content_hash"],
+                "classification": job["classification"], "subject": job["subject"], "action": job["action"],
+                "change_object": job["change_object"], "event_time": job["event_time"],
+                "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
+                "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
+            }
+            related_events = self._related_events(candidate, job["material_id"], job["content_hash"])
+            trigger_type = str(job.get("playbook_trigger") or "") or "major_catalyst"
+            model_jobs.append({
+                **job, "candidate": candidate, "related_events": related_events, "trigger_type": trigger_type,
+            })
+        if not model_jobs:
+            return 0
+        outputs: dict[int, tuple[PlaybookOutput, int, int, int] | Exception] = {}
+        with ThreadPoolExecutor(max_workers=min(self.playbook_concurrency, len(model_jobs)),
+                                thread_name_prefix="investment-playbook") as executor:
+            futures = {
+                executor.submit(
+                    self._run_playbook_pipeline, job["candidate"], job["related_events"], job["trigger_type"],
+                ): int(job["id"])
+                for job in model_jobs
+            }
+            for future in as_completed(futures):
+                try:
+                    outputs[futures[future]] = future.result()
+                except Exception as exc:
+                    outputs[futures[future]] = exc
+        processed = 0
+        for job in model_jobs:
+            result = outputs[int(job["id"])]
+            if isinstance(result, Exception):
+                self._fail_batch([job], f"{type(result).__name__}: {result}", now)
+                self.last_error = str(result)
+                processed += 1
+                continue
+            pb, total_in, total_out, total_calls = result
+            try:
+                self._record_usage(
+                    "playbook", ModelOutput([], pb.actual_model, pb.fallback_reason, total_in, total_out, total_calls), now,
+                )
+                if not self._eligible(job["material_id"], job["content_hash"]):
+                    self._mark_ignored(job["id"], now)
+                    continue
+                with self.db:
+                    if not self._eligible(job["material_id"], job["content_hash"]):
+                        self.db.execute(
+                            "UPDATE investment_lead_tasks SET status='ignored',lease_until=NULL,completed_at=?,updated_at=? WHERE id=?",
+                            (now, now, job["id"]),
+                        )
+                        continue
+                    self._save_playbook_lead(job, pb, now)
+                    self.db.execute(
+                        "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,actual_model=?,"
+                        "fallback_reason=?,input_tokens=?,output_tokens=?,last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
+                        (pb.actual_model, pb.fallback_reason, total_in, total_out, now, now, job["id"]),
+                    )
+                processed += 1
+            except Exception as exc:
+                self._fail_batch([job], f"{type(exc).__name__}: {exc}", now)
+                self.last_error = str(exc)
+                processed += 1
+        return processed
+
+    def _save_playbook_lead(self, job: dict[str, Any], pb: PlaybookOutput, now: str) -> str:
+        lead = pb.lead
+        playbook_json = _json(pb.playbook)
+        sources = [(job["material_id"], job["content_hash"])]
+        existing = self.db.execute(
+            "SELECT l.* FROM investment_leads l JOIN investment_lead_sources s ON s.lead_id=l.id "
+            "WHERE s.material_id=? AND s.content_hash=? ORDER BY l.last_substantive_at DESC LIMIT 1",
+            (job["material_id"], job["content_hash"]),
+        ).fetchone()
+        assets = lead.get("assets") or []
+        claims = lead.get("source_claims") or []
+        if existing is not None:
+            lead_id = str(existing["id"])
+            old_assets = _decoded(existing["assets_json"], [])
+            merged_assets = list(old_assets) if isinstance(old_assets, list) else []
+            seen_names = {str(a.get("name") or "").casefold() for a in merged_assets if isinstance(a, dict)}
+            for asset in assets:
+                if isinstance(asset, dict) and str(asset.get("name") or "").casefold() not in seen_names:
+                    merged_assets.append(asset)
+                    seen_names.add(str(asset.get("name") or "").casefold())
+            revision = int(existing["revision"]) + 1
+            status = "active" if merged_assets else str(existing["status"] or "active")
+            merged_assets_json = _json(merged_assets)
+            self.db.execute(
+                "UPDATE investment_leads SET assets_json=?,playbook_json=?,last_substantive_at=?,revision=?,status=?,updated_at=? WHERE id=?",
+                (merged_assets_json, playbook_json, now, revision, status, now, lead_id),
+            )
+            self.db.execute(
+                "INSERT INTO investment_lead_revisions(lead_id,revision,subject,driver_logic,conditions,assets_json,"
+                "source_claims_json,source_materials_json,actual_model,prompt_version,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (lead_id, revision, existing["subject"], lead["driver_logic"], lead.get("conditions") or existing["conditions"],
+                 merged_assets_json, existing["source_claims_json"], _json(sources), pb.actual_model, PLAYBOOK_PROMPT_VERSION, now),
+            )
+            return lead_id
+        lead_id = str(uuid.uuid4())
+        status = "active" if assets else "unlocated"
+        assets_json = _json(assets)
+        claims_json = _json(claims)
+        self.db.execute(
+            "INSERT INTO investment_leads(id,subject,driver_logic,conditions,assets_json,source_claims_json,playbook_json,"
+            "first_seen_at,last_substantive_at,revision,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?)",
+            (lead_id, lead["subject"], lead["driver_logic"], lead.get("conditions") or "",
+             assets_json, claims_json, playbook_json, now, now, status, now, now),
+        )
+        self.db.execute(
+            "INSERT INTO investment_lead_revisions(lead_id,revision,subject,driver_logic,conditions,assets_json,"
+            "source_claims_json,source_materials_json,actual_model,prompt_version,created_at) "
+            "VALUES(?,1,?,?,?,?,?,?,?,?,?)",
+            (lead_id, lead["subject"], lead["driver_logic"], lead.get("conditions") or "",
+             assets_json, claims_json, _json(sources), pb.actual_model, PLAYBOOK_PROMPT_VERSION, now),
+        )
+        self.db.execute(
+            "INSERT OR IGNORE INTO investment_lead_sources(lead_id,material_id,content_hash,role,created_at) VALUES(?,?,?,'evidence',?)",
+            (lead_id, job["material_id"], job["content_hash"], now),
+        )
+        return lead_id
 
     def _related_events(self, candidate: dict[str, Any], material_id: str, content_hash: str) -> list[dict[str, Any]]:
         cutoff_7d = _iso(_now() - timedelta(days=7))
@@ -1580,7 +1864,7 @@ class InvestmentLeadService:
     def retry_failed(self, *, stage: str = "", limit: int = 100) -> int:
         if self.postgres_repository is not None:
             return self.postgres_repository.retry_failed(stage=stage, limit=limit, now=_now())
-        if stage and stage not in {"scan", "derive", "supplement", "identity_search"}:
+        if stage and stage not in {"scan", "derive", "supplement", "playbook", "identity_search"}:
             raise ValueError("不支持的投资线索任务阶段")
         safe_limit = min(500, max(1, int(limit)))
         if stage == "identity_search":
@@ -1637,6 +1921,7 @@ class InvestmentLeadService:
         if self.postgres_repository is not None:
             data = self.postgres_repository.dashboard_rows(
                 usage_date=_now(), derive_prompt_version=DERIVE_PROMPT_VERSION,
+                playbook_prompt_version=PLAYBOOK_PROMPT_VERSION,
             )
             counts = data["counts"]
             identity_counts = data["identity_counts"]
@@ -1650,19 +1935,22 @@ class InvestmentLeadService:
                 "tasks": {
                     "pendingScan": counts.get(("scan", "pending"), 0), "processingScan": counts.get(("scan", "processing"), 0),
                     "pendingDerive": counts.get(("derive", "pending"), 0), "processingDerive": counts.get(("derive", "processing"), 0),
+                    "pendingPlaybook": counts.get(("playbook", "pending"), 0), "processingPlaybook": counts.get(("playbook", "processing"), 0),
                     "pendingSupplement": counts.get(("supplement", "pending"), 0), "processingSupplement": counts.get(("supplement", "processing"), 0),
                     "pendingIdentitySearch": identity_counts.get("pending", 0), "processingIdentitySearch": identity_counts.get("processing", 0),
-                    "failed": sum(counts.get((stage, "failed"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("failed", 0),
-                    "budgetPaused": sum(counts.get((stage, "budget_paused"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("budget_paused", 0),
+                    "failed": sum(counts.get((stage, "failed"), 0) for stage in ("scan", "derive", "supplement", "playbook")) + identity_counts.get("failed", 0),
+                    "budgetPaused": sum(counts.get((stage, "budget_paused"), 0) for stage in ("scan", "derive", "supplement", "playbook")) + identity_counts.get("budget_paused", 0),
                     "identitySearchFailures": identity_counts.get("failed", 0), "identitySearchUnresolved": identity_counts.get("unresolved", 0),
                     "incomplete": counts.get(("scan", "needs_material"), 0), "oldestPendingAt": data["oldest"],
                 },
                 "results": {"active": data["active"], "unlocated": data["unlocated"],
+                            "playbooks": data.get("playbooks", 0),
                             "scannedNoCandidate": counts.get(("scan", "no_candidate"), 0)},
                 "usage": {
                     "inputTokens": data["input_tokens"], "inputTokenBudget": None,
                     "scanCalls": int(usage["scan"]["calls"] if usage.get("scan") else 0),
                     "deriveCalls": int(usage["derive"]["calls"] if usage.get("derive") else 0), "deriveCallBudget": None,
+                    "playbookCalls": int(usage["playbook"]["calls"] if usage.get("playbook") else 0),
                     "supplementReads": int(usage["supplement"]["calls"] if usage.get("supplement") else 0), "supplementReadBudget": None,
                     "searchCalls": int(usage["search"]["calls"] if usage.get("search") else 0), "searchCallBudget": None,
                     "outputTokens": data["output_tokens"],
@@ -1705,12 +1993,14 @@ class InvestmentLeadService:
                 "processingScan": counts.get(("scan", "processing"), 0),
                 "pendingDerive": counts.get(("derive", "pending"), 0),
                 "processingDerive": counts.get(("derive", "processing"), 0),
+                "pendingPlaybook": counts.get(("playbook", "pending"), 0),
+                "processingPlaybook": counts.get(("playbook", "processing"), 0),
                 "pendingSupplement": counts.get(("supplement", "pending"), 0),
                 "processingSupplement": counts.get(("supplement", "processing"), 0),
                 "pendingIdentitySearch": identity_counts.get("pending", 0),
                 "processingIdentitySearch": identity_counts.get("processing", 0),
-                "failed": sum(counts.get((stage, "failed"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("failed", 0),
-                "budgetPaused": sum(counts.get((stage, "budget_paused"), 0) for stage in ("scan", "derive", "supplement")) + identity_counts.get("budget_paused", 0),
+                "failed": sum(counts.get((stage, "failed"), 0) for stage in ("scan", "derive", "supplement", "playbook")) + identity_counts.get("failed", 0),
+                "budgetPaused": sum(counts.get((stage, "budget_paused"), 0) for stage in ("scan", "derive", "supplement", "playbook")) + identity_counts.get("budget_paused", 0),
                 "identitySearchFailures": identity_counts.get("failed", 0),
                 "identitySearchUnresolved": identity_counts.get("unresolved", 0),
                 "incomplete": counts.get(("scan", "needs_material"), 0),
@@ -1719,6 +2009,7 @@ class InvestmentLeadService:
             "results": {
                 "active": int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l WHERE l.status='active' AND {VISIBLE_LEAD_SQL}").fetchone()[0]),
                 "unlocated": int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l WHERE l.status='unlocated' AND {VISIBLE_LEAD_SQL}").fetchone()[0]),
+                "playbooks": int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l WHERE l.playbook_json!='{{}}' AND {VISIBLE_LEAD_SQL}").fetchone()[0]),
                 "scannedNoCandidate": counts.get(("scan", "no_candidate"), 0),
             },
             "usage": {
@@ -1727,6 +2018,7 @@ class InvestmentLeadService:
                 "scanCalls": int(usage_by_kind["scan"]["calls"] if usage_by_kind.get("scan") else 0),
                 "deriveCalls": int(usage_by_kind["derive"]["calls"] if usage_by_kind.get("derive") else 0),
                 "deriveCallBudget": None,
+                "playbookCalls": int(usage_by_kind["playbook"]["calls"] if usage_by_kind.get("playbook") else 0),
                 "supplementReads": int(usage_by_kind["supplement"]["calls"] if usage_by_kind.get("supplement") else 0),
                 "supplementReadBudget": None,
                 "searchCalls": int(usage_by_kind["search"]["calls"] if usage_by_kind.get("search") else 0),
@@ -1743,6 +2035,7 @@ class InvestmentLeadService:
         account: str = "",
         unlocated_only: bool = False,
         impact: str = "",
+        mode: str = "",
         offset: int = 0,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -1753,8 +2046,9 @@ class InvestmentLeadService:
             safe_limit, safe_offset = min(100, max(1, int(limit))), max(0, int(offset))
             total, rows = self.postgres_repository.list_leads_rows(
                 cutoff=_now() - durations[window], query=query, account=account,
-                unlocated_only=unlocated_only, impact=impact, offset=safe_offset, limit=safe_limit,
+                unlocated_only=unlocated_only, impact=impact, mode=mode, offset=safe_offset, limit=safe_limit,
                 derive_prompt_version=DERIVE_PROMPT_VERSION,
+                playbook_prompt_version=PLAYBOOK_PROMPT_VERSION,
             )
             return {"items": [self._lead_payload(row) for row in rows], "total": total}
         cutoff = _iso(_now() - durations[window])
@@ -1762,6 +2056,13 @@ class InvestmentLeadService:
         params: list[Any] = [cutoff]
         if unlocated_only:
             clauses.append("l.status='unlocated'")
+        if mode and mode != "all":
+            if mode == "playbook":
+                clauses.append("l.playbook_json!='{}'")
+            elif mode == "standard":
+                clauses.append("l.playbook_json='{}'")
+            else:
+                raise ValueError("不支持的投资线索模式筛选")
         if impact:
             if impact not in {"high", "medium", "low", "unknown"}:
                 raise ValueError("不支持的预期影响筛选")
@@ -1771,7 +2072,7 @@ class InvestmentLeadService:
                 clauses.append("EXISTS(SELECT 1 FROM json_each(l.assets_json) a WHERE json_extract(a.value, '$.assessment.impact')=?)")
                 params.append(impact)
         if query.strip():
-            clauses.append("(LOWER(l.subject || ' ' || l.driver_logic || ' ' || l.conditions || ' ' || l.assets_json) LIKE ?)")
+            clauses.append("(LOWER(l.subject || ' ' || l.driver_logic || ' ' || l.conditions || ' ' || l.assets_json || ' ' || l.playbook_json) LIKE ?)")
             params.append(f"%{query.strip().lower()}%")
         if account.strip():
             clauses.append(
@@ -1882,6 +2183,7 @@ class InvestmentLeadService:
 
     @staticmethod
     def _lead_payload(row: dict[str, Any]) -> dict[str, Any]:
+        playbook = _decoded(row.get("playbook_json"), {})
         return {
             "id": row["id"], "subject": row["subject"], "driverLogic": row["driver_logic"],
             "conditions": row["conditions"], "assets": _decoded(row["assets_json"], []),
@@ -1889,6 +2191,7 @@ class InvestmentLeadService:
             "firstSeenAt": row["first_seen_at"], "lastSubstantiveAt": row["last_substantive_at"],
             "revision": int(row["revision"]), "status": row["status"], "accounts": row.get("accounts") or "",
             "replay": _decoded(row.get("replay_json"), {}),
+            "playbook": playbook if isinstance(playbook, dict) and playbook.get("mode") == "deep_playbook" else None,
         }
 
 
@@ -1932,7 +2235,7 @@ def run_worker(database_path: Path, *, once: bool = False) -> int:
         while True:
             try:
                 result = service.process_once()
-                if result["scanned"] or result["derived"] or result["supplemented"] or result["identitySearched"]:
+                if result["scanned"] or result["derived"] or result.get("playbooks") or result["supplemented"] or result["identitySearched"]:
                     print(json.dumps(result, ensure_ascii=False))
                     continue
             except Exception as exc:

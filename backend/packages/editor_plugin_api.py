@@ -941,6 +941,7 @@ class EditorPluginNewsGenService:
                 account=str(payload.get("account") or ""),
                 unlocated_only=payload.get("unlocated_only") in {True, "true", 1},
                 impact=str(payload.get("impact") or ""),
+                mode=str(payload.get("mode") or ""),
                 offset=int(payload.get("offset") or 0),
                 limit=int(payload.get("limit") or 50),
             )

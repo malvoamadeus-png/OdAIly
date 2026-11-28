@@ -135,20 +135,42 @@ CREATE TABLE IF NOT EXISTS investment_lead_scheduler_cursor (
 """
 
 
+INVESTMENT_LEADS_PLAYBOOK_MIGRATION_SQL = """
+ALTER TABLE investment_leads ADD COLUMN IF NOT EXISTS playbook_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE investment_lead_events ADD COLUMN IF NOT EXISTS playbook_trigger text NOT NULL DEFAULT '';
+ALTER TABLE investment_lead_tasks DROP CONSTRAINT IF EXISTS investment_lead_tasks_stage_check;
+ALTER TABLE investment_lead_tasks ADD CONSTRAINT investment_lead_tasks_stage_check
+  CHECK(stage IN ('scan','derive','supplement','playbook'));
+ALTER TABLE investment_lead_usage DROP CONSTRAINT IF EXISTS investment_lead_usage_kind_check;
+ALTER TABLE investment_lead_usage ADD CONSTRAINT investment_lead_usage_kind_check
+  CHECK(kind IN ('scan','derive','search','supplement','playbook'));
+CREATE INDEX IF NOT EXISTS idx_investment_leads_playbook
+  ON investment_leads(last_substantive_at DESC) WHERE playbook_json <> '{}'::jsonb;
+"""
+
+
 def initialize_investment_leads_schema(
     *, schema: str = "hottopic", settings: PostgresSettings | None = None,
 ) -> tuple[int, ...]:
-    migration = PostgresMigration(
-        1,
-        "investment_leads_initial",
-        sha256(INVESTMENT_LEADS_SCHEMA_SQL.encode("utf-8")).hexdigest(),
-        lambda connection: connection.execute(INVESTMENT_LEADS_SCHEMA_SQL),
+    migrations = (
+        PostgresMigration(
+            1,
+            "investment_leads_initial",
+            sha256(INVESTMENT_LEADS_SCHEMA_SQL.encode("utf-8")).hexdigest(),
+            lambda connection: connection.execute(INVESTMENT_LEADS_SCHEMA_SQL),
+        ),
+        PostgresMigration(
+            2,
+            "investment_leads_playbook_v1",
+            sha256(INVESTMENT_LEADS_PLAYBOOK_MIGRATION_SQL.encode("utf-8")).hexdigest(),
+            lambda connection: connection.execute(INVESTMENT_LEADS_PLAYBOOK_MIGRATION_SQL),
+        ),
     )
     with connect_postgres(schema=schema, application_name="odaily-investment-leads-migrate", settings=settings) as connection:
         return apply_schema_migrations(
             connection,
             schema=schema,
             component="investment_leads",
-            migrations=(migration,),
+            migrations=migrations,
             settings=settings,
         )

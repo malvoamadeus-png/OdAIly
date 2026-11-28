@@ -2304,10 +2304,12 @@ class HotTopicPostgresRepository:
                 (material_id, content_hash, account_lower, relation, observed_at, observed_at),
             )
             if material.get("role") == "source_post":
+                from packages.investment_leads.analysis import SCAN_PROMPT_VERSION
+
                 cursor = connection.execute(
                     "INSERT INTO investment_lead_tasks(material_id,content_hash,stage,prompt_version,status,created_at,updated_at) "
-                    "VALUES(%s,%s,'scan','investment_leads_scan_v4','pending',%s,%s) ON CONFLICT DO NOTHING RETURNING id",
-                    (material_id, content_hash, observed_at, observed_at),
+                    "VALUES(%s,%s,'scan',%s,'pending',%s,%s) ON CONFLICT DO NOTHING RETURNING id",
+                    (material_id, content_hash, SCAN_PROMPT_VERSION, observed_at, observed_at),
                 )
                 connection.execute(
                     "UPDATE investment_lead_tasks SET status='pending',attempts=0,next_attempt_at=NULL,lease_until=NULL,"
