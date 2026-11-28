@@ -126,8 +126,8 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 
 独立服务为 `odaily-investment-leads.service`，命令为 `backend/src/main.py x-agent-investment-leads-worker`。`ODAILY_STORAGE_BACKEND=postgres` 时使用本机 PostgreSQL `hottopic` schema，不打开 HotTopic SQLite；否则打开共享 HotTopic SQLite，使用 WAL 和 60 秒 busy timeout。systemd 的 `EnvironmentFile` 与显式环境变量优先于 `.env` 默认值，因为 dotenv 不覆盖已设置的进程环境。首次部署在 `/opt/OdAIly` 安装 `deploy/odaily-investment-leads.service` 到 `/etc/systemd/system/`，执行 `systemctl daemon-reload`，并启用服务；后续代码更新同步仓库后重启 `odaily-hottopic.service`、`odaily-editor-plugin-api.service` 和 `odaily-investment-leads.service`。纯前端更新由 GitHub 连接的 Vercel 流程发布。服务配置显式固定 `X_AGENT_MODEL` 与 `X_AGENT_FALLBACK_MODEL` 为 `gpt-6-luna`、模型请求超时为 180 秒、扫描批次材料数为 10、推导并发数为 10；默认 10 秒轮询，不设每日用量额度。控制台管理员 API 为：
 
-- `/console/x-agent/investment-leads`：列表、时间窗口、关键词、账号和待定位筛选，服务端分页。
-- `/console/x-agent/investment-leads/detail`：原帖/推导、来源材料、补充读取、身份搜索、线索修订。
+- `/console/x-agent/investment-leads`：列表、时间窗口、关键词、账号和待定位筛选，服务端分页；每页最多返回 15 条，超出请求上限时服务端按 15 条截断。列表只返回卡片摘要，不返回完整剧本、原文主张、研究出处或详细资产评估；超过 4 KB 时按客户端支持的 gzip 压缩响应。
+- `/console/x-agent/investment-leads/detail`：卡片展开时按需读取完整剧本、原帖/推导、来源材料、补充读取、身份搜索、详细资产评估和线索修订；超过 4 KB 时按客户端支持的 gzip 压缩响应。
 - `/console/x-agent/investment-leads/status`：订阅数、Worker、任务、失败、预算和用量。
 - `/console/x-agent/investment-leads/retry-failed`：按阶段和数量重试失败任务。
 - `/console/x-agent/investment-leads/playbook-feedback`：人工将深度剧本及其关联原始材料标记为 `没必要深度剧本`（或清空取消），落库到 `investment_leads.playbook_feedback` 与 `investment_lead_materials.playbook_feedback`（PG migration v3 及 SQLite 同步支持），保留作后续触发规则升级的负样本案例。

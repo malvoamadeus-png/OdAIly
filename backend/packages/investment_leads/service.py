@@ -2089,20 +2089,20 @@ class InvestmentLeadService:
         impact: str = "",
         mode: str = "",
         offset: int = 0,
-        limit: int = 50,
+        limit: int = 15,
     ) -> dict[str, Any]:
         durations = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
         if window not in durations:
             raise ValueError("不支持的投资线索时间窗口")
         if self.postgres_repository is not None:
-            safe_limit, safe_offset = min(100, max(1, int(limit))), max(0, int(offset))
+            safe_limit, safe_offset = min(15, max(1, int(limit))), max(0, int(offset))
             total, rows = self.postgres_repository.list_leads_rows(
                 cutoff=_now() - durations[window], query=query, account=account,
                 unlocated_only=unlocated_only, impact=impact, mode=mode, offset=safe_offset, limit=safe_limit,
                 derive_prompt_version=DERIVE_PROMPT_VERSION,
                 playbook_prompt_version=PLAYBOOK_PROMPT_VERSION,
             )
-            return {"items": [self._lead_payload(row) for row in rows], "total": total}
+            return {"items": [self._lead_list_payload(row) for row in rows], "total": total}
         cutoff = _iso(_now() - durations[window])
         clauses = ["l.last_substantive_at>=?", VISIBLE_LEAD_SQL]
         params: list[Any] = [cutoff]
@@ -2135,15 +2135,20 @@ class InvestmentLeadService:
             params.append(account.strip().lstrip("@").lower())
         where = " WHERE " + " AND ".join(clauses)
         total = int(self.db.execute(f"SELECT COUNT(*) FROM investment_leads l{where}", params).fetchone()[0])
-        safe_limit, safe_offset = min(100, max(1, int(limit))), max(0, int(offset))
+        safe_limit, safe_offset = min(15, max(1, int(limit))), max(0, int(offset))
         rows = self.db.execute(
-            "SELECT l.*,(SELECT group_concat(DISTINCT o.screen_name_lower) FROM investment_lead_sources s "
+            "SELECT l.id,l.subject,l.driver_logic,l.assets_json,l.first_seen_at,l.last_substantive_at,"
+            "l.revision,l.status,l.replay_json,l.playbook_json,l.playbook_feedback,l.playbook_feedback_at,"
+            "(SELECT json_extract(c.value,'$.text') FROM json_each(l.source_claims_json) c "
+            "WHERE json_extract(c.value,'$.kind')='post' AND TRIM(COALESCE(json_extract(c.value,'$.text'),''))!='' "
+            "ORDER BY CAST(c.key AS INTEGER) LIMIT 1) source_post_summary,"
+            "(SELECT group_concat(DISTINCT o.screen_name_lower) FROM investment_lead_sources s "
             "JOIN investment_lead_observations o ON o.material_id=s.material_id AND o.content_hash=s.content_hash "
             "WHERE s.lead_id=l.id) accounts "
             f"FROM investment_leads l{where} ORDER BY l.last_substantive_at DESC,l.id LIMIT ? OFFSET ?",
             [*params, safe_limit, safe_offset],
         ).fetchall()
-        return {"items": [self._lead_payload(dict(row)) for row in rows], "total": total}
+        return {"items": [self._lead_list_payload(dict(row)) for row in rows], "total": total}
 
     def set_playbook_feedback(self, lead_id: str, feedback: str) -> dict[str, Any]:
         clean_id = str(lead_id or "").strip()
@@ -2269,6 +2274,99 @@ class InvestmentLeadService:
             "createdAt": item["created_at"],
         } for item in revisions]
         return lead
+
+    @staticmethod
+    def _lead_list_payload(row: dict[str, Any]) -> dict[str, Any]:
+        assets = _decoded(row.get("assets_json"), [])
+        asset_summaries = []
+        if isinstance(assets, list):
+            for asset in assets:
+                if not isinstance(asset, dict):
+                    continue
+                assessment = asset.get("assessment")
+                summary: dict[str, Any] = {
+                    "name": asset.get("name") or "",
+                    "ticker": asset.get("ticker") or "",
+                    "direction": asset.get("direction") or "",
+                }
+                if asset.get("driver_type"):
+                    summary["driver_type"] = asset["driver_type"]
+                if isinstance(assessment, dict):
+                    impact = assessment.get("impact")
+                    confidence = assessment.get("confidence")
+                    summary["assessment"] = {
+                        "impact": impact if impact in {"high", "medium", "low", "unknown"} else "unknown",
+                        "confidence": confidence if confidence in {"high", "medium", "low", "unknown"} else "unknown",
+                    }
+                asset_summaries.append(summary)
+
+        raw_playbook = _decoded(row.get("playbook_json"), {})
+        playbook: dict[str, Any] | None = None
+        if isinstance(raw_playbook, dict) and raw_playbook.get("mode") == "deep_playbook":
+            primary = raw_playbook.get("primary_bet")
+            motive = raw_playbook.get("hidden_motive")
+            counterparty = raw_playbook.get("counterparty_simulation")
+            risk = raw_playbook.get("risk_and_invalidation")
+            stages = raw_playbook.get("staged_playbook")
+            citations = raw_playbook.get("research_citations")
+            event_summary = str(raw_playbook.get("event_summary") or "").strip()
+            if not event_summary:
+                event_summary = str(row.get("source_post_summary") or "").strip()
+            trade_nature = risk.get("trade_nature") if isinstance(risk, dict) else ""
+            if isinstance(trade_nature, str) and "|" in trade_nature:
+                trade_nature = trade_nature.split("|", 1)[0].strip() or "左侧赔率博弈"
+            stage_summaries = []
+            if isinstance(stages, list):
+                for stage in stages[:7]:
+                    if not isinstance(stage, dict):
+                        continue
+                    targets = stage.get("targets")
+                    stage_summaries.append({
+                        "stage": stage.get("stage") or "",
+                        "targets": [target for target in targets[:2] if isinstance(target, str)]
+                        if isinstance(targets, list) else [],
+                        "direction": stage.get("direction") or "",
+                        "current_status": stage.get("current_status") or "",
+                    })
+            playbook = {
+                "mode": "deep_playbook",
+                "trigger_type": raw_playbook.get("trigger_type") or "",
+                "event_summary": event_summary[:500],
+                "headline_call": raw_playbook.get("headline_call") or "",
+                "primary_bet": {
+                    "target": primary.get("target") or "",
+                    "direction": primary.get("direction") or "",
+                    "asymmetry_pitch": primary.get("asymmetry_pitch") or "",
+                } if isinstance(primary, dict) else None,
+                "hidden_motive": {
+                    "most_lethal_hypothesis": motive.get("most_lethal_hypothesis") or "",
+                } if isinstance(motive, dict) else None,
+                "counterparty_simulation": {
+                    "market_maker_reaction": counterparty.get("market_maker_reaction") or "",
+                } if isinstance(counterparty, dict) else None,
+                "staged_playbook": stage_summaries,
+                "risk_and_invalidation": {
+                    "trade_nature": trade_nature or "",
+                    "time_stop_loss": risk.get("time_stop_loss") or "",
+                } if isinstance(risk, dict) else None,
+                "research_citation_count": len(citations) if isinstance(citations, list) else 0,
+            }
+
+        replay = _decoded(row.get("replay_json"), {})
+        replay_summary = {
+            key: value for key, value in replay.items()
+            if key in {"label", "sourcePostedAt", "importedAt"}
+        } if isinstance(replay, dict) else {}
+        return {
+            "id": row["id"], "subject": row["subject"], "driverLogic": row["driver_logic"],
+            "assets": asset_summaries,
+            "firstSeenAt": row["first_seen_at"], "lastSubstantiveAt": row["last_substantive_at"],
+            "revision": int(row["revision"]), "status": row["status"], "accounts": row.get("accounts") or "",
+            "replay": replay_summary,
+            "playbook": playbook,
+            "playbookFeedback": str(row.get("playbook_feedback") or ""),
+            "playbookFeedbackAt": row.get("playbook_feedback_at"),
+        }
 
     @staticmethod
     def _lead_payload(row: dict[str, Any]) -> dict[str, Any]:

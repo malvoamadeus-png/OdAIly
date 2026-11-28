@@ -943,7 +943,7 @@ class EditorPluginNewsGenService:
                 impact=str(payload.get("impact") or ""),
                 mode=str(payload.get("mode") or ""),
                 offset=int(payload.get("offset") or 0),
-                limit=int(payload.get("limit") or 50),
+                limit=int(payload.get("limit") or 15),
             )
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc
@@ -2152,7 +2152,12 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any], *, no_store: bool = False) -> None:
         body = json.dumps(payload, ensure_ascii=False, default=self._json_default).encode("utf-8")
         compressed = False
-        compressible = urlparse(self.path).path in {'/console/hyperliquid-news/get', '/console/system-information', '/console/meme/get', '/console/meme/detail', '/console/ai-text-self-upgrade', '/console/predict-html/get'}
+        compressible = urlparse(self.path).path in {
+            '/console/hyperliquid-news/get', '/console/system-information',
+            '/console/meme/get', '/console/meme/detail', '/console/ai-text-self-upgrade',
+            '/console/predict-html/get', '/console/x-agent/investment-leads',
+            '/console/x-agent/investment-leads/detail',
+        }
         if compressible and len(body) > 4096:
             accepts = self.headers.get('Accept-Encoding', '')
             for encoding in accepts.split(','):

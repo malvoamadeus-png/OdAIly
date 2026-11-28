@@ -42,6 +42,7 @@ type EnabledFilter = 'all' | 'enabled' | 'disabled';
 type AccountAvailabilityFilter = 'all' | 'suspected_invalid';
 
 const PAGE_SIZE = 50;
+const INVESTMENT_PAGE_SIZE = 15;
 const MARKET_WINDOW_OPTIONS = [
   { value: '1h', label: '1 小时' },
   { value: '24h', label: '24 小时' },
@@ -111,12 +112,12 @@ function mergeSubscriptionResponse(
   return merged;
 }
 
-function pageCount(total: number): number {
-  return Math.max(1, Math.ceil(total / PAGE_SIZE));
+function pageCount(total: number, pageSize: number): number {
+  return Math.max(1, Math.ceil(total / pageSize));
 }
 
-function pageNumber(offset: number): number {
-  return Math.floor(offset / PAGE_SIZE) + 1;
+function pageNumber(offset: number, pageSize: number): number {
+  return Math.floor(offset / pageSize) + 1;
 }
 
 function PageControls({
@@ -124,20 +125,22 @@ function PageControls({
   total,
   disabled,
   onChange,
+  pageSize = PAGE_SIZE,
 }: {
   offset: number;
   total: number;
   disabled: boolean;
   onChange: (offset: number) => void;
+  pageSize?: number;
 }) {
-  const page = pageNumber(offset);
-  const pages = pageCount(total);
+  const page = pageNumber(offset, pageSize);
+  const pages = pageCount(total, pageSize);
   return (
     <div className="xAgentPager">
       <span>{total.toLocaleString()} 条 · 第 {page} / {pages} 页</span>
       <div>
-        <button className="iconButton" type="button" title="上一页" aria-label="上一页" disabled={disabled || offset === 0} onClick={() => onChange(Math.max(0, offset - PAGE_SIZE))}><ChevronLeft size={17} /></button>
-        <button className="iconButton" type="button" title="下一页" aria-label="下一页" disabled={disabled || offset + PAGE_SIZE >= total} onClick={() => onChange(offset + PAGE_SIZE)}><ChevronRight size={17} /></button>
+        <button className="iconButton" type="button" title="上一页" aria-label="上一页" disabled={disabled || offset === 0} onClick={() => onChange(Math.max(0, offset - pageSize))}><ChevronLeft size={17} /></button>
+        <button className="iconButton" type="button" title="下一页" aria-label="下一页" disabled={disabled || offset + pageSize >= total} onClick={() => onChange(offset + pageSize)}><ChevronRight size={17} /></button>
       </div>
     </div>
   );
@@ -464,10 +467,13 @@ function playbookTradeNature(value?: string): string {
   return value.split(/[|/、，,]+/)[0]?.trim() || value;
 }
 
-function playbookEventSummary(item: Pick<XAgentInvestmentLead, 'sourceClaims' | 'playbook'>): string {
+function playbookEventSummary(item: {
+  playbook?: { event_summary?: string } | null;
+  sourceClaims?: XAgentInvestmentLeadDetail['sourceClaims'];
+}): string {
   const explicit = item.playbook?.event_summary?.trim();
   if (explicit) return explicit;
-  const postClaim = item.sourceClaims.find((claim) => claim.kind === 'post' && claim.text?.trim());
+  const postClaim = item.sourceClaims?.find((claim) => claim.kind === 'post' && claim.text?.trim());
   return postClaim?.text?.trim() || '';
 }
 
@@ -916,7 +922,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           impact: investmentImpact,
           mode: investmentMode,
           offset: investmentOffset,
-          limit: PAGE_SIZE,
+          limit: INVESTMENT_PAGE_SIZE,
         }),
         getXAgentInvestmentLeadsStatus(),
       ]).then(([page, status]) => {
@@ -1447,7 +1453,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
                 )}
                 {item.replay?.label && <span className="xAgentInvestmentMeta">{item.replay.label} · 原帖 {formatTime(item.replay.sourcePostedAt)} · 分析更新 {formatTime(item.replay.importedAt)}</span>}
                 <span className="xAgentInvestmentMeta">
-                  {playbook ? `触发主体 ${item.subject} · 含 ${(playbook.research_citations || []).length} 份公开出处 · ` : ''}
+                  {playbook ? `触发主体 ${item.subject} · 含 ${playbook.research_citation_count} 份公开出处 · ` : ''}
                   来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}
                 </span>
               </button>
@@ -1478,7 +1484,7 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
             </article>;
           })}
         </div>
-        <PageControls offset={investmentOffset} total={investmentTotal} disabled={investmentLoading} onChange={(offset) => { setInvestmentOffset(offset); setInvestmentSelectedId(null); }} />
+        <PageControls offset={investmentOffset} total={investmentTotal} disabled={investmentLoading} pageSize={INVESTMENT_PAGE_SIZE} onChange={(offset) => { setInvestmentOffset(offset); setInvestmentSelectedId(null); }} />
       </section>}
     </section>
   );

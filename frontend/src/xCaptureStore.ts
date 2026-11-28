@@ -497,6 +497,26 @@ export type XAgentInvestmentLeadPlaybook = {
   research_summary?: string;
 };
 
+export type XAgentInvestmentLeadPlaybookSummary = {
+  mode: 'deep_playbook';
+  trigger_type: 'anomaly_behavior' | 'major_catalyst' | string;
+  event_summary?: string;
+  headline_call: string;
+  primary_bet?: {
+    target?: string;
+    direction?: string;
+    asymmetry_pitch?: string;
+  };
+  hidden_motive?: { most_lethal_hypothesis?: string };
+  counterparty_simulation?: { market_maker_reaction?: string };
+  staged_playbook: Array<Pick<XAgentInvestmentLeadPlaybookStage, 'stage' | 'direction' | 'targets' | 'current_status'>>;
+  risk_and_invalidation?: {
+    trade_nature?: string;
+    time_stop_loss?: string;
+  };
+  research_citation_count: number;
+};
+
 export type XAgentInvestmentLeadsStatus = {
   generatedAt: string;
   captureStartedAt: string;
@@ -537,22 +557,50 @@ export type XAgentInvestmentLeadsStatus = {
   };
 };
 
+export type XAgentInvestmentLeadAsset = {
+  name: string;
+  ticker: string;
+  market: string;
+  direction: string;
+  relation: string;
+  driver_type?: 'operating' | 'theme';
+  catalyst?: string;
+  premise_type?: 'observed' | 'event_conditional';
+  assessment?: {
+    impact: 'high' | 'medium' | 'low' | 'unknown';
+    confidence: 'high' | 'medium' | 'low' | 'unknown';
+    expectation_change: string;
+    market_acceptance: string;
+    key_uncertainty: string;
+    reconsider_if: string;
+  };
+};
+
+export type XAgentInvestmentLeadClaim = { material_id: string; kind: 'post' | 'inference'; text: string };
+
 export type XAgentInvestmentLead = {
   id: string;
   subject: string;
   driverLogic: string;
-  conditions: string;
-  assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional'; assessment?: { impact: 'high' | 'medium' | 'low' | 'unknown'; confidence: 'high' | 'medium' | 'low' | 'unknown'; expectation_change: string; market_acceptance: string; key_uncertainty: string; reconsider_if: string } }>;
+  assets: Array<Pick<XAgentInvestmentLeadAsset, 'name' | 'ticker' | 'direction' | 'driver_type'> & {
+    assessment?: Pick<NonNullable<XAgentInvestmentLeadAsset['assessment']>, 'impact' | 'confidence'>;
+  }>;
   replay?: { label?: string; sourcePostedAt?: string; importedAt?: string };
-  playbook?: XAgentInvestmentLeadPlaybook | null;
+  playbook?: XAgentInvestmentLeadPlaybookSummary | null;
   playbookFeedback?: string;
   playbookFeedbackAt?: string | null;
-  sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
   firstSeenAt: string;
   lastSubstantiveAt: string;
   revision: number;
   status: 'active' | 'unlocated';
   accounts: string;
+};
+
+type XAgentInvestmentLeadDetailBase = Omit<XAgentInvestmentLead, 'assets' | 'playbook'> & {
+  conditions: string;
+  assets: XAgentInvestmentLeadAsset[];
+  playbook?: XAgentInvestmentLeadPlaybook | null;
+  sourceClaims: XAgentInvestmentLeadClaim[];
 };
 
 export type XAgentInvestmentLeadSource = {
@@ -576,13 +624,13 @@ export type XAgentInvestmentLeadRevision = {
   subject: string;
   driverLogic: string;
   conditions: string;
-  assets: XAgentInvestmentLead['assets'];
-  sourceClaims: XAgentInvestmentLead['sourceClaims'];
+  assets: XAgentInvestmentLeadAsset[];
+  sourceClaims: XAgentInvestmentLeadClaim[];
   actualModel: string;
   createdAt: string;
 };
 
-export type XAgentInvestmentLeadDetail = XAgentInvestmentLead & {
+export type XAgentInvestmentLeadDetail = XAgentInvestmentLeadDetailBase & {
   sources: XAgentInvestmentLeadSource[];
   revisions: XAgentInvestmentLeadRevision[];
   identitySearches: Array<{
@@ -2612,7 +2660,7 @@ export async function listXAgentInvestmentLeads({
   impact = '',
   mode = '',
   offset = 0,
-  limit = 50,
+  limit = 15,
 }: {
   window: '24h' | '7d' | '30d';
   query?: string;

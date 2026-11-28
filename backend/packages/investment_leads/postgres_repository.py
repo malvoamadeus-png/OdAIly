@@ -496,7 +496,12 @@ class InvestmentLeadPostgresRepository:
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
             total = int(connection.execute(f"SELECT COUNT(*) AS n FROM investment_leads l{where}", params).fetchone()["n"])
             rows = connection.execute(
-                "SELECT l.*, (SELECT string_agg(DISTINCT o.screen_name_lower,',') FROM investment_lead_sources s "
+                "SELECT l.id,l.subject,l.driver_logic,l.assets_json,l.first_seen_at,l.last_substantive_at,"
+                "l.revision,l.status,l.replay_json,l.playbook_json,l.playbook_feedback,l.playbook_feedback_at,"
+                "(SELECT c.value->>'text' FROM jsonb_array_elements(l.source_claims_json) WITH ORDINALITY AS c(value,ordinality) "
+                "WHERE c.value->>'kind'='post' AND NULLIF(BTRIM(c.value->>'text'),'') IS NOT NULL "
+                "ORDER BY c.ordinality LIMIT 1) AS source_post_summary,"
+                "(SELECT string_agg(DISTINCT o.screen_name_lower,',') FROM investment_lead_sources s "
                 "JOIN investment_lead_observations o ON o.material_id=s.material_id AND o.content_hash=s.content_hash "
                 "WHERE s.lead_id=l.id) AS accounts "
                 f"FROM investment_leads l{where} ORDER BY l.last_substantive_at DESC,l.id LIMIT %s OFFSET %s",
