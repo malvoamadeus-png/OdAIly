@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Callable
 
-SCAN_PROMPT_VERSION = "investment_leads_scan_v5"
+SCAN_PROMPT_VERSION = "investment_leads_scan_v6"
 DERIVE_PROMPT_VERSION = "investment_leads_derive_v5"
 PLAYBOOK_PROMPT_VERSION = "investment_leads_playbook_v1"
 IDENTITY_SEARCH_PROMPT_VERSION = "investment_leads_identity_search_v1"
@@ -419,6 +419,7 @@ class InvestmentLeadAnalyzer:
             trigger_type=trigger_type,
             citations=citations,
             research_summary=context_text,
+            fallback_event_summary=_clean(candidate.get("summary"), 400),
         )
         if not playbook:
             raise ValueError("深度剧本响应缺少有效核心结论或分阶段推演")
@@ -567,10 +568,10 @@ def _scan_prompt(batch: list[dict[str, Any]]) -> str:
         "driver_candidate 要求企业、行业、市场或协议层面的实质变化，或具名核心主体的高代价反常动作，能沿盈利、供需、资金流、估值、风险溢价、信用或对手盘博弈延伸到具体资产方向；"
         "composable 表示有上述层面的变化、可能与独立事件形成投资驱动，但单独不足；不能用它收纳所有新闻。"
         "no_candidate 表示闲聊、静态介绍或重复表述；incomplete 表示关键信息似乎只在图片/外链，当前文字无法判断。"
-        "playbook_trigger 仅在 classification='driver_candidate' 时可非空，否则留空字符串："
-        "填 'anomaly_behavior'：具名核心主体出现大幅浮亏急售储备、流动性/信用/借贷异动、突击筹资或异常组织突变等高代价反常动作；"
-        "填 'major_catalyst'：具备高市场冲击力、显著预期差或跨市场多阶段外溢潜力的重大经营、制度、政策、安全、地缘或战略合作事件（宁可适当放宽，不要漏掉大事件）；"
-        "留空 ''：常规产品小改款（如普通GPU新型号例行更新）、小规模常规进展、低预期差或低外溢性线索。"
+        "playbook_trigger 仅在 classification='driver_candidate' 时可非空，否则留空字符串，且必须严格克制："
+        "填 'anomaly_behavior'：具名核心主体（项目方、协议国库、创始人、头部VC、大做市商、交易所、上市公司或财库公司）出现大幅浮亏急售储备、稳定币脱锚、流动性/信用/借贷异动、突击折价融资或异常高管/合作突变等高代价反常动作；"
+        "填 'major_catalyst'：仅限极高烈度的系统级或跨市场级冲击（例如大型银行/头部交易所/主流稳定币危机、超大型巨头最高层突发变故、重大战争/监管/政策制度拐点、全球级基础设施安全漏洞或核心产业链断供）；"
+        "必须留空 ''（先走常规推导，若确属高影响会再自动晋级）：常规产品更新或小改款、一般公司订单或数亿美元级合同、普通企业并购洽谈、二线协议整合或新功能上线、常规分析师评级调整、一般军备新闻、名人或企业家未经落实的随口构想或口嗨，以及单一公司的常规业绩/经营动态。"
         "静态知识、内部持仓占比上升本身不够；开始测试、需求变化、瓶颈、观看时长下降、回购增加等具体变化可以成为候选。"
         "个人开通Pro/Max、个人额度用尽、账号封禁、查询按钮暂不可用、例行安全审计、一般产品教程均为no_candidate，"
         "除非同一材料另有企业/行业层面实质变化。公司发布技术研究不等于投资机会；只有改进识别能力而无商业或产业传导时排除。"
@@ -696,6 +697,7 @@ def _playbook_prompt(
     trigger_type: str,
 ) -> str:
     shape = {
+        "event_summary": "1至2句客观原消息摘要：直接说清原帖报道了谁做了什么事（主语+动作+对象），让读者不点开原帖也能立刻看懂前因后果",
         "headline_call": "先说结论：一句话给出最锋利的反直觉核心交易判断（点明主攻方向、核心标的与认知差）",
         "primary_bet": {
             "target": "核心第一枪标的",
@@ -723,7 +725,7 @@ def _playbook_prompt(
         }],
         "assumption_boundary": "明确区分哪些是原帖与公开资料证实的客观关系，哪些是未证实的左侧压力测试假设",
         "risk_and_invalidation": {
-            "trade_nature": "左侧赔率博弈|右侧催化跟随|跨市场时差套利",
+            "trade_nature": "三选一，只能填一个值：左侧赔率博弈 或 右侧催化跟随 或 跨市场时差套利（禁止用竖线拼接多个）",
             "confirming_signals": ["看到什么盘面或舆情信号说明假设正在成真"],
             "thesis_stop_loss": "什么事实出现直接证伪核心逻辑（逻辑止损）",
             "time_stop_loss": "明确的时间止损窗口（例如几小时或首个开盘时段内未发酵即退出）",
@@ -768,7 +770,9 @@ def _normalize_playbook(
     trigger_type: str,
     citations: list[dict[str, str]],
     research_summary: str,
+    fallback_event_summary: str = "",
 ) -> dict[str, Any]:
+    event_summary = _clean(raw.get("event_summary"), 400) or _clean(fallback_event_summary, 400)
     headline_call = _clean(raw.get("headline_call"), 500)
     primary_raw = raw.get("primary_bet") if isinstance(raw.get("primary_bet"), dict) else {}
     primary_target = _clean(primary_raw.get("target"), 120)
@@ -825,7 +829,9 @@ def _normalize_playbook(
         })
 
     risk_raw = raw.get("risk_and_invalidation") if isinstance(raw.get("risk_and_invalidation"), dict) else {}
-    trade_nature = _clean(risk_raw.get("trade_nature"), 40) or "左侧赔率博弈"
+    raw_trade_nature = _clean(risk_raw.get("trade_nature"), 80)
+    trade_nature = next((part.strip() for part in re.split(r"[|/、，,]+", raw_trade_nature) if part.strip()), "") or "左侧赔率博弈"
+    trade_nature = trade_nature[:30]
     risk = {
         "trade_nature": trade_nature,
         "confirming_signals": _string_list(risk_raw.get("confirming_signals"), 6, 320),
@@ -844,6 +850,7 @@ def _normalize_playbook(
     return {
         "mode": "deep_playbook",
         "trigger_type": trigger_type if trigger_type in VALID_PLAYBOOK_TRIGGERS else "major_catalyst",
+        "event_summary": event_summary,
         "headline_call": headline_call,
         "primary_bet": primary_bet,
         "hidden_motive": hidden_motive,

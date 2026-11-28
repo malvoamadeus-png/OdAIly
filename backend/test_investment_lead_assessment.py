@@ -341,3 +341,131 @@ def test_high_impact_standard_derive_escalates_and_upgrades_existing_lead_in_pla
     assert item["playbook"]["mode"] == "deep_playbook"
     assert any(a["ticker"] == "HYPE" for a in item["assets"])
     assert any(a["ticker"] == "ICE" for a in item["assets"])
+
+
+def test_playbook_24h_dedup_attaches_source_and_cleans_legacy_fields():
+    from packages.investment_leads.analysis import (
+        PlaybookContextOutput,
+        PlaybookOutput,
+        _normalize_playbook,
+        _playbook_to_lead,
+    )
+    from packages.investment_leads.service import persist_capture_materials
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute(
+        "CREATE TABLE hottopic_accounts(screen_name_lower TEXT PRIMARY KEY,status TEXT NOT NULL,"
+        "created_at TEXT NOT NULL,investment_leads_enabled INTEGER NOT NULL DEFAULT 1,"
+        "investment_leads_enabled_at TEXT)"
+    )
+    now = _iso()
+    db.execute(
+        "INSERT INTO hottopic_accounts(screen_name_lower,status,created_at,investment_leads_enabled,investment_leads_enabled_at) "
+        "VALUES('carol','followed',?,1,?)",
+        (now, now),
+    )
+
+    search_calls = 0
+
+    class DedupAnalyzer:
+        primary_model = "gpt-6-luna"
+
+        def scan(self, materials):
+            return ModelOutput(
+                [{
+                    "material_id": m["material_id"],
+                    "content_hash": m["content_hash"],
+                    "classification": "driver_candidate",
+                    "playbook_trigger": "major_catalyst",
+                    "subject": "OpenAI 与 Apple",
+                    "action": "提起反诉",
+                    "change_object": "商业机密与供应商关系",
+                    "event_time": "刚刚",
+                    "impact_relations": ["合作受损"],
+                    "summary": "OpenAI 对 Apple 提起反诉并提出涉及供应商施压的商业机密指控。",
+                    "reason": "巨头级冲突升级",
+                } for m in materials],
+                "gpt-6-luna", None, 40, 15, 1,
+            )
+
+        def derive(self, candidate, related_events, existing_leads):
+            return ModelOutput([], "gpt-6-luna", None, 20, 10, 1)
+
+        def search_playbook_context(self, candidate):
+            nonlocal search_calls
+            search_calls += 1
+            return PlaybookContextOutput(
+                summary_text="Apple (NASDAQ: AAPL) 与 OpenAI 合作。",
+                citations=[{"url": "https://example.com/aapl", "title": "Apple OpenAI"}],
+                queries=["OpenAI Apple"],
+                actual_model="gpt-6-luna", input_tokens=50, output_tokens=20,
+            )
+
+        def generate_playbook(self, candidate, related_events, *, context_text, citations, trigger_type):
+            pb = _normalize_playbook(
+                {
+                    "headline_call": "第一枪做空 AAPL。",
+                    "primary_bet": {"target": "Apple", "ticker": "AAPL", "market": "US Stock", "direction": "做空", "asymmetry_pitch": "事件折价"},
+                    "hidden_motive_redteam": {"most_lethal_hypothesis": "争夺 AI 硬件入口", "why_not_normal": "正面反诉升级"},
+                    "counterparty_run_simulation": {"crowd_blindspot": "只看索赔额", "market_maker_reaction": "抬高期权波动率", "short_hunter_angle": "押注合作受损"},
+                    "staged_playbook": [
+                        {"stage": "第一阶段", "opportunity": "主标的折价", "direction": "做空", "targets": ["AAPL"], "logic": "合作受阻", "current_status": "等待开市"},
+                    ],
+                    "assumption_boundary": "仅原帖与公开资料为事实。",
+                    "risk_and_invalidation": {
+                        "trade_nature": "左侧赔率博弈|跨市场时差套利",
+                        "confirming_signals": ["开盘走弱"],
+                        "thesis_stop_loss": "迅速和解",
+                        "time_stop_loss": "1-2 个交易时段",
+                    },
+                },
+                trigger_type=trigger_type,
+                citations=citations,
+                research_summary=context_text,
+                fallback_event_summary=candidate["summary"],
+            )
+            return PlaybookOutput(
+                playbook=pb, lead=_playbook_to_lead(candidate, pb),
+                actual_model="gpt-6-luna", fallback_reason=None, input_tokens=70, output_tokens=40, calls=1,
+            )
+
+    service = InvestmentLeadService(Path(":memory:"), analyzer=DedupAnalyzer(), connection=db)
+    service.flush_seconds = 0
+    t1 = _iso()
+    persist_capture_materials(
+        db,
+        account_lower="carol",
+        materials=[{
+            "material_id": "tweet:oa-1", "author_screen_name": "carol", "role": "source_post", "relation": "original",
+            "created_at_iso": t1, "activity_at": t1, "activity_time_complete": True,
+            "url": "https://x.com/carol/status/10", "text": "OpenAI 对 Apple 提起反诉",
+        }],
+        observed_at=t1,
+    )
+    service.process_once()
+    assert search_calls == 1
+    first_list = service.list_leads(mode="playbook")
+    assert first_list["total"] == 1
+    first_pb = first_list["items"][0]["playbook"]
+    assert first_pb["event_summary"] == "OpenAI 对 Apple 提起反诉并提出涉及供应商施压的商业机密指控。"
+    assert first_pb["risk_and_invalidation"]["trade_nature"] == "左侧赔率博弈"
+
+    # Second repost of the same event within 24h should attach as source without re-running web search
+    t2 = _iso()
+    persist_capture_materials(
+        db,
+        account_lower="carol",
+        materials=[{
+            "material_id": "tweet:oa-2", "author_screen_name": "carol", "role": "source_post", "relation": "original",
+            "created_at_iso": t2, "activity_at": t2, "activity_time_complete": True,
+            "url": "https://x.com/carol/status/11", "text": "转述报道：OpenAI 对 Apple 提起反诉并指控供应商施压",
+        }],
+        observed_at=t2,
+    )
+    service.process_once()
+    assert search_calls == 1
+    assert service.list_leads(mode="playbook")["total"] == 1
+    detail = service.lead_detail(first_list["items"][0]["id"])
+    assert detail is not None
+    assert len(detail["sources"]) == 2

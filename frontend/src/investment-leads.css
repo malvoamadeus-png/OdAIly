@@ -111,6 +111,66 @@
   line-height: 1.4;
 }
 
+.playbookTriggerFact {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 11px;
+  border: 1px solid #dde6ec;
+  border-radius: 7px;
+  background: #f4f7f9;
+  text-align: left;
+}
+
+.playbookFactTag {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #e1eaef;
+  color: #2f4b5c;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.playbookFactBody {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  color: #2a3a44;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.playbookFactBody strong {
+  color: #16252e;
+  font-weight: 700;
+}
+
+.playbookFactText {
+  color: #465863;
+}
+
+.playbookSection--fact {
+  border-color: #d8e3ea;
+  background: #f6f9fb;
+}
+
+.playbookDetailFact {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+  color: #2d3e48;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.playbookDetailFact strong {
+  color: #14232c;
+  font-size: 14px;
+}
+
 .playbookHeadline {
   display: block;
   color: #19262e;
@@ -140,6 +200,10 @@
   line-height: 1.55;
 }
 
+.playbookPreviewContent {
+  display: block;
+}
+
 .playbookPreviewRow--stop {
   padding-top: 4px;
   border-top: 1px dashed #eadcc8;
@@ -154,13 +218,15 @@
 }
 
 .playbookInlineDir {
-  display: inline-block;
-  margin-right: 6px;
-  padding: 1px 6px;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  padding: 1px 7px;
   border-radius: 4px;
   font-style: normal;
   font-size: 12px;
   font-weight: 700;
+  vertical-align: baseline;
 }
 .playbookInlineDir--short { background: #fdecea; color: #b42318; }
 .playbookInlineDir--long { background: #e8f7ef; color: #16794c; }

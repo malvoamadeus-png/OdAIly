@@ -410,8 +410,21 @@ function playbookStatusTone(status: string): string {
   return 'unconfirmed';
 }
 
-function PlaybookDetailSection({ playbook }: { playbook: XAgentInvestmentLeadPlaybook }) {
+function playbookTradeNature(value?: string): string {
+  if (!value) return '';
+  return value.split(/[|/、，,]+/)[0]?.trim() || value;
+}
+
+function playbookEventSummary(item: Pick<XAgentInvestmentLead, 'sourceClaims' | 'playbook'>): string {
+  const explicit = item.playbook?.event_summary?.trim();
+  if (explicit) return explicit;
+  const postClaim = item.sourceClaims.find((claim) => claim.kind === 'post' && claim.text?.trim());
+  return postClaim?.text?.trim() || '';
+}
+
+function PlaybookDetailSection({ item, playbook }: { item: XAgentInvestmentLeadDetail; playbook: XAgentInvestmentLeadPlaybook }) {
   const triggerLabel = playbook.trigger_type === 'anomaly_behavior' ? '反常博弈' : '多阶段催化';
+  const eventSummary = playbookEventSummary(item);
   const primary = playbook.primary_bet;
   const motive = playbook.hidden_motive;
   const cp = playbook.counterparty_simulation;
@@ -420,10 +433,22 @@ function PlaybookDetailSection({ playbook }: { playbook: XAgentInvestmentLeadPla
 
   return (
     <div className="playbookDetail">
+      {(item.subject || eventSummary) && (
+        <section className="playbookSection playbookSection--fact">
+          <div className="playbookSectionHead">
+            <h3>触发消息（原始事件事实）</h3>
+            <span className={`playbookBadge playbookBadge--${playbook.trigger_type === 'anomaly_behavior' ? 'anomaly' : 'catalyst'}`}>深度剧本 · {triggerLabel}</span>
+          </div>
+          <p className="playbookDetailFact">
+            <strong>{item.subject}</strong>
+            {eventSummary && <span>{eventSummary}</span>}
+          </p>
+        </section>
+      )}
       <section className="playbookSection">
         <div className="playbookSectionHead">
           <h3>逻辑与对手盘推演</h3>
-          <span className={`playbookBadge playbookBadge--${playbook.trigger_type === 'anomaly_behavior' ? 'anomaly' : 'catalyst'}`}>深度剧本 · {triggerLabel}</span>
+          {risk?.trade_nature && <span className="playbookSubMeta">{playbookTradeNature(risk.trade_nature)}</span>}
         </div>
         <div className="playbookLogicGrid">
           {primary?.target && (
@@ -554,7 +579,7 @@ function InvestmentLeadDetail({
   const playbook = detail.playbook?.mode === 'deep_playbook' ? detail.playbook : null;
   return (
     <div className="xAgentInvestmentDetail">
-      {playbook && <PlaybookDetailSection playbook={playbook} />}
+      {playbook && <PlaybookDetailSection item={detail} playbook={playbook} />}
       {!playbook && detail.conditions && <p><strong>条件：</strong>{detail.conditions}</p>}
       {!playbook && detail.assets.map((asset) => asset.assessment && <section className="investmentAssessment" key={`${asset.name}:${asset.ticker}`}><h3>{asset.name} 的预期判断</h3>
         <p>预期影响：{investmentLevel(asset.assessment.impact)} · 判断把握：{investmentLevel(asset.assessment.confidence)}</p>
@@ -1296,6 +1321,8 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
           {investmentItems.map((item) => {
             const selected = investmentSelectedId === item.id;
             const playbook = item.playbook?.mode === 'deep_playbook' ? item.playbook : null;
+            const eventSummary = playbook ? playbookEventSummary(item) : '';
+            const tradeNature = playbook ? playbookTradeNature(playbook.risk_and_invalidation?.trade_nature) : '';
             return <article className={`${selected ? 'xAgentInvestmentCard active' : 'xAgentInvestmentCard'}${playbook ? ' xAgentInvestmentCard--playbook' : ''}`} key={item.id}>
               <button className="xAgentInvestmentCardButton" type="button" aria-expanded={selected} onClick={() => setInvestmentSelectedId((current) => current === item.id ? null : item.id)}>
                 {playbook ? (
@@ -1306,22 +1333,29 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
                           深度剧本 · {playbook.trigger_type === 'anomaly_behavior' ? '反常博弈' : '多阶段催化'}
                         </span>
                         <span className="playbookMetaTag">高思考 · 公开检索</span>
-                        {playbook.risk_and_invalidation?.trade_nature && <span className="playbookMetaTag">{playbook.risk_and_invalidation.trade_nature}</span>}
+                        {tradeNature && <span className="playbookMetaTag">{tradeNature}</span>}
                       </span>
                       <time>{formatTime(item.lastSubstantiveAt)}</time>
+                    </span>
+                    <span className="playbookTriggerFact">
+                      <span className="playbookFactTag">触发消息</span>
+                      <span className="playbookFactBody">
+                        <strong>{item.subject}</strong>
+                        {eventSummary && <span className="playbookFactText">{eventSummary}</span>}
+                      </span>
                     </span>
                     <span className="playbookHeadline">{playbook.headline_call}</span>
                     <span className="playbookPreviewBox">
                       {(playbook.primary_bet?.target || playbook.hidden_motive?.most_lethal_hypothesis) && (
                         <span className="playbookPreviewRow">
                           <strong className="playbookPreviewKey">核心逻辑</strong>
-                          <span>
+                          <span className="playbookPreviewContent">
                             {playbook.primary_bet?.target && (
                               <em className={`playbookInlineDir playbookInlineDir--${playbookDirectionTone(playbook.primary_bet.direction || '')}`}>
                                 {playbook.primary_bet.direction} {playbook.primary_bet.target}
                               </em>
                             )}
-                            {playbook.hidden_motive?.most_lethal_hypothesis || playbook.primary_bet?.asymmetry_pitch}
+                            <span>{playbook.hidden_motive?.most_lethal_hypothesis || playbook.primary_bet?.asymmetry_pitch}</span>
                           </span>
                         </span>
                       )}

@@ -664,6 +664,38 @@ class InvestmentLeadPostgresRepository:
                         jobs.append(job)
                 return jobs
 
+    def recent_playbooks(self, *, cutoff: datetime, limit: int = 50) -> list[dict[str, Any]]:
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            rows = connection.execute(
+                "SELECT id,subject,driver_logic,source_claims_json,playbook_json,last_substantive_at "
+                "FROM investment_leads WHERE playbook_json <> '{}'::jsonb AND last_substantive_at>=%s "
+                "ORDER BY last_substantive_at DESC LIMIT %s",
+                (cutoff, limit),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def attach_playbook_source(self, *, job: dict[str, Any], lead_id: str, now: datetime) -> bool:
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            with connection.transaction():
+                current = connection.execute(
+                    "SELECT 1 FROM investment_lead_tasks WHERE id=%s AND stage='playbook' AND status='processing' "
+                    "AND attempts=%s AND lease_until=%s AND lease_until>%s FOR UPDATE",
+                    (job["id"], job["attempts"], job["lease_until"], now),
+                ).fetchone()
+                if current is None:
+                    return False
+                connection.execute(
+                    "INSERT INTO investment_lead_sources(lead_id,material_id,content_hash,role,created_at) "
+                    "VALUES(%s,%s,%s,'evidence',%s) ON CONFLICT(lead_id,material_id,content_hash,role) DO NOTHING",
+                    (lead_id, job["material_id"], job["content_hash"], now),
+                )
+                connection.execute(
+                    "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,"
+                    "last_error=NULL,completed_at=%s,updated_at=%s WHERE id=%s AND attempts=%s AND lease_until=%s AND lease_until>%s",
+                    (now, now, job["id"], job["attempts"], job["lease_until"], now),
+                )
+                return True
+
     def save_playbook_result(
         self, *, job: dict[str, Any], lead: dict[str, Any], playbook: dict[str, Any],
         actual_model: str, fallback_reason: str | None, input_tokens: int, output_tokens: int,

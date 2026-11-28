@@ -29,11 +29,11 @@ PostgreSQL 查询返回的 `date` / `datetime` 进入推导 Prompt 时统一序�
 
 ## 阶段与 Prompt
 
-模型路由沿用 `X_AGENT_MODEL` 和 `X_AGENT_FALLBACK_MODEL`，默认 `gpt-6-luna`。常规扫描与推导请求使用 `reasoning_effort=none`；深度发散剧本的公开关系检索使用 Responses API `web_search`，剧本推演使用 `reasoning_effort=high`。模型请求和 Web Search 均在数据库写事务之外执行。Worker 每轮最多领取一个扫描批次、最多 10 个推导任务、最多 2 个深度剧本任务（由 `X_AGENT_INVESTMENT_LEADS_PLAYBOOK_CONCURRENCY` 控制）、一个补充任务和一个身份搜索任务。推导的材料、关联事件和已有线索上下文由主线程读取；最多 10 个无状态模型请求并发运行，任务领取、预算记录、资格复核和结果写入仍由主线程串行完成，不在线程间共享连接。同批请求使用领取时的已有线索快照，因此不会看到同批其他请求刚生成的线索。扫描、推导与深度剧本按任务创建时间全局排序，不按账号轮转；扫描批次可混合多个账号的帖子。身份搜索仍按账号轮转，轮转游标保存在 `investment_lead_scheduler_cursor`。
+模型路由沿用 `X_AGENT_MODEL` 和 `X_AGENT_FALLBACK_MODEL`，默认 `gpt-6-luna`。常规扫描与推导请求使用 `reasoning_effort=none`；深度发散剧本的公开关系检索使用 Responses API `web_search`，剧本推演使用 `reasoning_effort=high`。模型请求和 Web Search 均在数据库写事务之外执行。Worker 每轮在积压时最多连续领取 3 批扫描（由 `X_AGENT_INVESTMENT_LEADS_SCAN_ROUNDS` 控制）、最多 10 个推导任务、最多 2 个深度剧本任务（由 `X_AGENT_INVESTMENT_LEADS_PLAYBOOK_CONCURRENCY` 控制）、一个补充任务和一个身份搜索任务。推导的材料、关联事件和已有线索上下文由主线程读取；最多 10 个无状态模型请求并发运行，任务领取、预算记录、资格复核和结果写入仍由主线程串行完成，不在线程间共享连接。同批请求使用领取时的已有线索快照，因此不会看到同批其他请求刚生成的线索。扫描、推导与深度剧本按任务创建时间全局排序，不按账号轮转；扫描批次可混合多个账号的帖子。身份搜索仍按账号轮转，轮转游标保存在 `investment_lead_scheduler_cursor`。
 
 ### 第一阶段：扫描
 
-Prompt 版本为 `investment_leads_scan_v5`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 10 个文本段和默认 24,000 序列化字符打包。扫描批次满额时立即提交，批次未满时最多等待 30 秒；队列有积压时，批次处理完立即继续领取下一批，不额外等待轮询间隔。模型为每段给出分类、深度剧本触发标记 `playbook_trigger`（`"" / anomaly_behavior / major_catalyst`）、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选，触发标记按 `anomaly_behavior > major_catalyst > ""` 合并。模型响应中缺少材料判定时按普通失败重试，不会直接把单次漏项置为最终失败。
+Prompt 版本为 `investment_leads_scan_v6`。扫描不按账号类型、金融关键词、ticker 或 Crypto 词表预过滤。正文按段落拆分，每段最多 4,800 字符；输入按最多 10 个文本段和默认 24,000 序列化字符打包。扫描批次满额时立即提交，批次未满时最多等待 30 秒；队列有积压时，批次处理完立即继续领取下一批，不额外等待轮询间隔。模型为每段给出分类、深度剧本触发标记 `playbook_trigger`（`"" / anomaly_behavior / major_catalyst`）、主体、动作、变化对象、时间、影响关系、摘要和判定原因；同一材料版本的各段合并，任一段识别为驱动候选时保留为候选，触发标记按 `anomaly_behavior > major_catalyst > ""` 合并。`major_catalyst` 严格收紧为系统级或跨市场级冲击，常规大单、一般并购洽谈、协议整合/上线、评级调整与未落实口嗨均留空，先走常规推导。模型响应中缺少材料判定时按普通失败重试，不会直接把单次漏项置为最终失败。
 
 扫描要求企业、行业、市场或协议层面的实质变化，或具名核心主体（项目方、协议国库、创始人、头部 VC、大做市商、交易所、上市公司或财库公司）的高代价反常动作（如大幅浮亏急售核心储备、疑似资金链或流动性异动、抵押借贷或信用承压、突击折价融资、核心合作或高管突变），能延伸到具体资产的盈利、供需、资金流、估值、风险溢价、信用或对手盘博弈。匿名地址/无名巨鲸日常买卖、普通转账与交易所充提、稳定币总市值日常增减、加密现货 ETF 流入流出统计、个人订阅/封号、查询功能暂不可用、例行审计、无商业传导的一般技术研究直接排除。重要性按相关资产的相对经济影响或重估意义判断，不设统一金额门槛。可组合材料仍保留于内部，不能把所有新闻都当作可组合材料。
 
@@ -84,11 +84,11 @@ Prompt 版本为 `investment_leads_playbook_v1`，通过独立 `stage='playbook'
 - 扫描入口：`scan` 标记 `playbook_trigger` 为 `anomaly_behavior`（具名核心主体高代价反常动作）或 `major_catalyst`（具备高冲击力、显著预期差或跨市场外溢潜力的重大事件）时直接入队；
 - 推导晋级：常规 `derive` 产出任一资产 `assessment.impact='high'` 时自动幂等入队。
 
-每个深度剧本任务串联执行两步纯文本处理，严禁链上地址追踪：
+每个深度剧本任务在检索前先对照近 24 小时已有深度剧本检查同主体或高词重合度；若命中同一事件，直接把该材料附挂到已有剧本的来源列表，不再重复检索和生成。未命中重复时串联执行两步纯文本处理，严禁链上地址追踪：
 1. **五维公开关系图谱检索**：调用 Responses API `web_search`，仅基于公开网页与公告查清目标主体的借贷/抵押绑定、核心资产与稳定币、同派系/同创始人强关联叙事资产、直接对手方/供应链及跨市场关联上市公司，并保留最多 8 条来源 URL。
-2. **红队高思考多阶段推演**：将原始材料、关联事件与公开关系图谱送入 `reasoning_effort=high` 推演，输出 `headline_call`（反直觉主结论）、`primary_bet`（主攻第一枪）、`hidden_motive`（反常归因与隐藏动机）、`counterparty_simulation`（无新公告前的做市商/对手盘抢跑模拟）、最多 7 个阶段的 `staged_playbook`（每阶段含方向、标的、偏远传导逻辑及状态 `已发生/部分发生/重点验证/等待开市/尚未确认/等待机会`）、独立的 `assumption_boundary`（严格隔离客观事实与左侧假设）以及 `risk_and_invalidation`（确认信号、逻辑止损、时间止损）。
+2. **红队高思考多阶段推演**：将原始材料、关联事件与公开关系图谱送入 `reasoning_effort=high` 推演，输出 `event_summary`（1–2 句客观原消息摘要）、`headline_call`（反直觉主结论）、`primary_bet`（主攻第一枪）、`hidden_motive`（反常归因与隐藏动机）、`counterparty_simulation`（无新公告前的做市商/对手盘抢跑模拟）、最多 7 个阶段的 `staged_playbook`（每阶段含方向、标的、偏远传导逻辑及状态 `已发生/部分发生/重点验证/等待开市/尚未确认/等待机会`）、独立的 `assumption_boundary`（严格隔离客观事实与左侧假设）以及 `risk_and_invalidation`（单值 `trade_nature`、确认信号、逻辑止损、时间止损）。
 
-结果保存在 `investment_leads.playbook_json`（PG migration v2 及 SQLite 同步支持），同一 `(material_id, content_hash)` 若已有常规线索则原地升级附加剧本并合并资产、避免重复条目；单次生成后不自动重跑状态机。控制台列表采用同流混排，提供 `mode`（`all/playbook/standard`）筛选；深度剧本卡片带醒目左侧强调边与徽章，折叠态直接露出主结论、核心博弈逻辑、对手盘抢跑、时间止损与分阶段标的条，展开态展示完整作战简报与可点击公开出处。
+结果保存在 `investment_leads.playbook_json`（PG migration v2 及 SQLite 同步支持），同一 `(material_id, content_hash)` 若已有常规线索则原地升级附加剧本并合并资产、避免重复条目；单次生成后不自动重跑状态机。控制台列表采用同流混排，提供 `mode`（`all/playbook/standard`）筛选；深度剧本卡片带醒目左侧强调边与徽章，折叠态顶部先露出「触发消息」客观事件事实，再展示主结论、核心博弈逻辑、对手盘抢跑、时间止损与分阶段标的条，展开态展示完整作战简报与可点击公开出处。
 
 ### 标的身份浅搜索
 
@@ -156,6 +156,7 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 - `X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS`：低流量扫描批次等待上限，默认 `30` 秒，范围 `0–300`；凑满批次或队列有积压时不等待。
 - `X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY`：单轮领取的推导数及最大模型并发数，默认 `10`，范围 `1–10`。
 - `X_AGENT_INVESTMENT_LEADS_PLAYBOOK_CONCURRENCY`：单轮领取的深度剧本任务数及最大并发数，默认 `2`，范围 `1–4`。
+- `X_AGENT_INVESTMENT_LEADS_SCAN_ROUNDS`：每轮在扫描队列有积压时最多连续执行的扫描批次数，默认 `3`，范围 `1–5`。
 - `X_AGENT_INVESTMENT_LEADS_MAX_BATCH_CHARS`：序列化请求字符预算，默认 `24000`，范围 `8000–300000`。
 - `X_AGENT_INVESTMENT_LEADS_WORKER_INTERVAL_SECONDS`：Worker 空闲时轮询间隔，默认 `10` 秒，范围 `1–60`；有任务完成时立即继续处理。
 

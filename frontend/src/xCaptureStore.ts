@@ -467,6 +467,7 @@ export type XAgentInvestmentLeadPlaybookStage = {
 export type XAgentInvestmentLeadPlaybook = {
   mode: 'deep_playbook';
   trigger_type: 'anomaly_behavior' | 'major_catalyst' | string;
+  event_summary?: string;
   headline_call: string;
   primary_bet?: {
     target?: string;

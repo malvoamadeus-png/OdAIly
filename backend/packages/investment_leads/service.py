@@ -352,6 +352,7 @@ class InvestmentLeadService:
         self.flush_seconds = _env_int("X_AGENT_INVESTMENT_LEADS_BATCH_WAIT_SECONDS", 30, 0, 300)
         self.derive_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_DERIVE_CONCURRENCY", 10, 1, 10)
         self.playbook_concurrency = _env_int("X_AGENT_INVESTMENT_LEADS_PLAYBOOK_CONCURRENCY", 2, 1, 4)
+        self.scan_rounds = _env_int("X_AGENT_INVESTMENT_LEADS_SCAN_ROUNDS", 3, 1, 5)
         self.last_error: str | None = None
         self.analyzer_error: str | None = None
         if reader_only:
@@ -376,12 +377,17 @@ class InvestmentLeadService:
             self.postgres_repository.heartbeat(now=now_dt, model_error=self.analyzer_error)
             self.postgres_repository.reclaim_stale(now=now_dt, lease=LEASE, max_attempts=MAX_ATTEMPTS)
             self.postgres_repository.resume_budget_paused(now=now_dt)
-            scanned = self._process_scan_batch_postgres(now)
-            derived = self._process_derive_batch_postgres(now)
-            playbooks = self._process_playbook_batch_postgres(now)
-            supplemented = self._process_one_supplement_postgres(now)
-            identity_searched = self._process_one_identity_search_postgres(now)
-            self.postgres_repository.maintain(now=now_dt, cutoff=now_dt - RETENTION)
+            scanned = 0
+            for _ in range(self.scan_rounds):
+                batch_scanned = self._process_scan_batch_postgres(_iso())
+                scanned += batch_scanned
+                if batch_scanned < self.batch_size:
+                    break
+            derived = self._process_derive_batch_postgres(_iso())
+            playbooks = self._process_playbook_batch_postgres(_iso())
+            supplemented = self._process_one_supplement_postgres(_iso())
+            identity_searched = self._process_one_identity_search_postgres(_iso())
+            self.postgres_repository.maintain(now=_now(), cutoff=_now() - RETENTION)
             return {
                 "scanned": scanned, "derived": derived, "playbooks": playbooks,
                 "supplemented": supplemented, "identitySearched": identity_searched,
@@ -389,12 +395,17 @@ class InvestmentLeadService:
         self._heartbeat(now)
         self._reclaim_stale(now)
         self._resume_budget_paused(now)
-        scan_count = self._process_scan_batch(now)
-        derive_count = self._process_derive_batch(now)
-        playbook_count = self._process_playbook_batch(now)
-        supplement_count = self._process_one_supplement(now)
-        identity_search_count = self._process_one_identity_search(now)
-        self._maintain(now)
+        scan_count = 0
+        for _ in range(self.scan_rounds):
+            batch_scanned = self._process_scan_batch(_iso())
+            scan_count += batch_scanned
+            if batch_scanned < self.batch_size:
+                break
+        derive_count = self._process_derive_batch(_iso())
+        playbook_count = self._process_playbook_batch(_iso())
+        supplement_count = self._process_one_supplement(_iso())
+        identity_search_count = self._process_one_identity_search(_iso())
+        self._maintain(_iso())
         return {
             "scanned": scan_count, "derived": derive_count, "playbooks": playbook_count,
             "supplemented": supplement_count, "identitySearched": identity_search_count,
@@ -621,7 +632,9 @@ class InvestmentLeadService:
         if self.analyzer is None:
             self._fail_scan_batch_postgres(jobs, self.analyzer_error or "X Agent 模型路由不可用", now_dt)
             return len(jobs)
+        recent_playbooks = repository.recent_playbooks(cutoff=now_dt - timedelta(hours=24))
         model_jobs: list[dict[str, Any]] = []
+        completed = 0
         for job in jobs:
             candidate = {
                 "material_id": job["material_id"], "content_hash": job["content_hash"],
@@ -630,11 +643,22 @@ class InvestmentLeadService:
                 "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
                 "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
             }
+            dup_lead_id = _find_duplicate_playbook(candidate, recent_playbooks)
+            if dup_lead_id:
+                repository.attach_playbook_source(job=job, lead_id=dup_lead_id, now=now_dt)
+                completed += 1
+                continue
             related_events = self._related_events_postgres(candidate, job)
             trigger_type = str(job.get("playbook_trigger") or "") or "major_catalyst"
             model_jobs.append({
                 **job, "candidate": candidate, "related_events": related_events, "trigger_type": trigger_type,
             })
+            recent_playbooks.append({
+                "id": "", "subject": candidate["subject"], "driver_logic": candidate["summary"],
+                "playbook_json": {"event_summary": candidate["summary"], "headline_call": ""},
+            })
+        if not model_jobs:
+            return completed
         outputs: dict[int, tuple[PlaybookOutput, int, int, int] | Exception] = {}
         with ThreadPoolExecutor(max_workers=min(self.playbook_concurrency, len(model_jobs)),
                                 thread_name_prefix="investment-playbook") as executor:
@@ -649,7 +673,6 @@ class InvestmentLeadService:
                     outputs[futures[future]] = future.result()
                 except Exception as exc:
                     outputs[futures[future]] = exc
-        completed = 0
         for job in model_jobs:
             result = outputs[int(job["id"])]
             if isinstance(result, Exception):
@@ -1403,7 +1426,9 @@ class InvestmentLeadService:
             return len(claimed)
         if not claimed:
             return 0
+        recent_playbooks = self._recent_playbooks()
         model_jobs: list[dict[str, Any]] = []
+        processed = 0
         for job in claimed:
             if not self._eligible(job["material_id"], job["content_hash"]):
                 self._mark_ignored(job["id"], now)
@@ -1415,13 +1440,31 @@ class InvestmentLeadService:
                 "impact_relations": _decoded(job["impact_relations_json"], []), "summary": job["summary"],
                 "reason": job["reason"], "material": _decoded(job["payload_json"], {}),
             }
+            dup_lead_id = _find_duplicate_playbook(candidate, recent_playbooks)
+            if dup_lead_id:
+                with self.db:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO investment_lead_sources(lead_id,material_id,content_hash,role,created_at) VALUES(?,?,?,'evidence',?)",
+                        (dup_lead_id, job["material_id"], job["content_hash"], now),
+                    )
+                    self.db.execute(
+                        "UPDATE investment_lead_tasks SET status='succeeded',lease_until=NULL,next_attempt_at=NULL,"
+                        "last_error=NULL,completed_at=?,updated_at=? WHERE id=?",
+                        (now, now, job["id"]),
+                    )
+                processed += 1
+                continue
             related_events = self._related_events(candidate, job["material_id"], job["content_hash"])
             trigger_type = str(job.get("playbook_trigger") or "") or "major_catalyst"
             model_jobs.append({
                 **job, "candidate": candidate, "related_events": related_events, "trigger_type": trigger_type,
             })
+            recent_playbooks.append({
+                "id": "", "subject": candidate["subject"], "driver_logic": candidate["summary"],
+                "playbook_json": {"event_summary": candidate["summary"], "headline_call": ""},
+            })
         if not model_jobs:
-            return 0
+            return processed
         outputs: dict[int, tuple[PlaybookOutput, int, int, int] | Exception] = {}
         with ThreadPoolExecutor(max_workers=min(self.playbook_concurrency, len(model_jobs)),
                                 thread_name_prefix="investment-playbook") as executor:
@@ -1436,7 +1479,6 @@ class InvestmentLeadService:
                     outputs[futures[future]] = future.result()
                 except Exception as exc:
                     outputs[futures[future]] = exc
-        processed = 0
         for job in model_jobs:
             result = outputs[int(job["id"])]
             if isinstance(result, Exception):
@@ -1580,6 +1622,16 @@ class InvestmentLeadService:
                 seen_materials.add(str(data["material_id"]))
         selected.sort(key=lambda item: item[0], reverse=True)
         return [item for _, item in selected[:20]]
+
+    def _recent_playbooks(self) -> list[dict[str, Any]]:
+        cutoff = _iso(_now() - timedelta(hours=24))
+        rows = self.db.execute(
+            "SELECT id,subject,driver_logic,source_claims_json,playbook_json,last_substantive_at "
+            "FROM investment_leads WHERE playbook_json!='{}' AND last_substantive_at>=? "
+            "ORDER BY last_substantive_at DESC LIMIT 50",
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _recent_leads(self) -> list[dict[str, Any]]:
         cutoff = _iso(_now() - timedelta(days=30))
@@ -2183,16 +2235,61 @@ class InvestmentLeadService:
 
     @staticmethod
     def _lead_payload(row: dict[str, Any]) -> dict[str, Any]:
-        playbook = _decoded(row.get("playbook_json"), {})
+        claims = _decoded(row["source_claims_json"], [])
+        raw_playbook = _decoded(row.get("playbook_json"), {})
+        playbook: dict[str, Any] | None = None
+        if isinstance(raw_playbook, dict) and raw_playbook.get("mode") == "deep_playbook":
+            playbook = dict(raw_playbook)
+            if not str(playbook.get("event_summary") or "").strip():
+                post_claim = next(
+                    (str(item.get("text") or "").strip() for item in claims if isinstance(item, dict) and item.get("kind") == "post" and str(item.get("text") or "").strip()),
+                    "",
+                )
+                playbook["event_summary"] = post_claim
+            risk = playbook.get("risk_and_invalidation")
+            if isinstance(risk, dict) and isinstance(risk.get("trade_nature"), str) and "|" in risk["trade_nature"]:
+                playbook["risk_and_invalidation"] = {
+                    **risk,
+                    "trade_nature": risk["trade_nature"].split("|", 1)[0].strip() or "左侧赔率博弈",
+                }
         return {
             "id": row["id"], "subject": row["subject"], "driverLogic": row["driver_logic"],
             "conditions": row["conditions"], "assets": _decoded(row["assets_json"], []),
-            "sourceClaims": _decoded(row["source_claims_json"], []),
+            "sourceClaims": claims,
             "firstSeenAt": row["first_seen_at"], "lastSubstantiveAt": row["last_substantive_at"],
             "revision": int(row["revision"]), "status": row["status"], "accounts": row.get("accounts") or "",
             "replay": _decoded(row.get("replay_json"), {}),
-            "playbook": playbook if isinstance(playbook, dict) and playbook.get("mode") == "deep_playbook" else None,
+            "playbook": playbook,
         }
+
+
+def _normalize_subject_key(value: str) -> str:
+    import re
+    return re.sub(r"[\s\-_/·,，。:：;；()（）\[\]【】\"'“”]+", "", value.casefold())
+
+
+def _find_duplicate_playbook(candidate: dict[str, Any], recent_playbooks: list[dict[str, Any]]) -> str:
+    cand_subject = _normalize_subject_key(str(candidate.get("subject") or ""))
+    cand_terms = _terms(" ".join(str(candidate.get(k) or "") for k in ("subject", "action", "change_object", "summary")))
+    for existing in recent_playbooks:
+        lead_id = str(existing.get("id") or "")
+        if not lead_id:
+            continue
+        exist_subject = _normalize_subject_key(str(existing.get("subject") or ""))
+        if cand_subject and exist_subject and cand_subject == exist_subject:
+            return lead_id
+        pb = _decoded(existing.get("playbook_json"), {})
+        pb_text = ""
+        if isinstance(pb, dict):
+            pb_text = f"{pb.get('event_summary') or ''} {pb.get('headline_call') or ''}"
+        exist_terms = _terms(f"{existing.get('subject') or ''} {existing.get('driver_logic') or ''} {pb_text}")
+        if not cand_terms or not exist_terms:
+            continue
+        shared = len(cand_terms & exist_terms)
+        overlap = shared / max(1, min(len(cand_terms), len(exist_terms)))
+        if shared >= 3 and overlap >= 0.45:
+            return lead_id
+    return ""
 
 
 def _terms(value: str) -> set[str]:
