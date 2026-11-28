@@ -545,6 +545,8 @@ export type XAgentInvestmentLead = {
   assets: Array<{ name: string; ticker: string; market: string; direction: string; relation: string; driver_type?: 'operating' | 'theme'; catalyst?: string; premise_type?: 'observed' | 'event_conditional'; assessment?: { impact: 'high' | 'medium' | 'low' | 'unknown'; confidence: 'high' | 'medium' | 'low' | 'unknown'; expectation_change: string; market_acceptance: string; key_uncertainty: string; reconsider_if: string } }>;
   replay?: { label?: string; sourcePostedAt?: string; importedAt?: string };
   playbook?: XAgentInvestmentLeadPlaybook | null;
+  playbookFeedback?: string;
+  playbookFeedbackAt?: string | null;
   sourceClaims: Array<{ material_id: string; kind: 'post' | 'inference'; text: string }>;
   firstSeenAt: string;
   lastSubstantiveAt: string;
@@ -2648,6 +2650,16 @@ export async function retryXAgentInvestmentLeadJobs(
     stage,
     limit: Math.min(500, Math.max(1, limit)),
   });
+}
+
+export async function setXAgentInvestmentLeadPlaybookFeedback(
+  leadId: string,
+  feedback: '' | '没必要深度剧本',
+): Promise<{ leadId: string; playbookFeedback: string; playbookFeedbackAt: string | null; updatedMaterials: number }> {
+  return consoleApiPost<{ leadId: string; playbookFeedback: string; playbookFeedbackAt: string | null; updatedMaterials: number }>(
+    '/console/x-agent/investment-leads/playbook-feedback',
+    { lead_id: leadId, feedback },
+  );
 }
 
 export async function saveBlockbeatsKey(apiKey: string): Promise<BlockbeatsKeyConfig> {

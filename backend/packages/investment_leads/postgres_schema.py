@@ -149,6 +149,15 @@ CREATE INDEX IF NOT EXISTS idx_investment_leads_playbook
 """
 
 
+INVESTMENT_LEADS_PLAYBOOK_FEEDBACK_MIGRATION_SQL = """
+ALTER TABLE investment_leads ADD COLUMN IF NOT EXISTS playbook_feedback text NOT NULL DEFAULT '';
+ALTER TABLE investment_leads ADD COLUMN IF NOT EXISTS playbook_feedback_at timestamptz;
+ALTER TABLE investment_lead_materials ADD COLUMN IF NOT EXISTS playbook_feedback text NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_investment_leads_playbook_feedback
+  ON investment_leads(playbook_feedback, last_substantive_at DESC) WHERE playbook_feedback <> '';
+"""
+
+
 def initialize_investment_leads_schema(
     *, schema: str = "hottopic", settings: PostgresSettings | None = None,
 ) -> tuple[int, ...]:
@@ -164,6 +173,12 @@ def initialize_investment_leads_schema(
             "investment_leads_playbook_v1",
             sha256(INVESTMENT_LEADS_PLAYBOOK_MIGRATION_SQL.encode("utf-8")).hexdigest(),
             lambda connection: connection.execute(INVESTMENT_LEADS_PLAYBOOK_MIGRATION_SQL),
+        ),
+        PostgresMigration(
+            3,
+            "investment_leads_playbook_feedback_v1",
+            sha256(INVESTMENT_LEADS_PLAYBOOK_FEEDBACK_MIGRATION_SQL.encode("utf-8")).hexdigest(),
+            lambda connection: connection.execute(INVESTMENT_LEADS_PLAYBOOK_FEEDBACK_MIGRATION_SQL),
         ),
     )
     with connect_postgres(schema=schema, application_name="odaily-investment-leads-migrate", settings=settings) as connection:

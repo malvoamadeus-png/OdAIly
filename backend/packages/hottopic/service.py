@@ -2038,6 +2038,10 @@ class HotTopicService:
     def retry_investment_lead_jobs(self, *, stage: str = "", limit: int = 100) -> int:
         return self.investment_lead_queries.retry_failed(stage=stage, limit=limit)
 
+    @_serialized
+    def set_investment_lead_playbook_feedback(self, *, lead_id: str, feedback: str) -> dict[str, Any]:
+        return self.investment_lead_queries.set_playbook_feedback(lead_id, feedback)
+
     @staticmethod
     def _window_cutoff(window: str, allowed: dict[str, timedelta]) -> str:
         if window not in allowed:

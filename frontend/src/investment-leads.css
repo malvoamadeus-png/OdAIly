@@ -498,6 +498,26 @@
 }
 .playbookCitations a:hover { text-decoration: underline; }
 
+.investmentCardActionRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.playbookFeedbackBtn--marked {
+  border-color: #d99b66 !important;
+  background: #fff2e2 !important;
+  color: #9a4a12 !important;
+  font-weight: 600;
+}
+
+.playbookFeedbackError {
+  margin: 4px 0 0;
+  color: #b42318;
+  font-size: 12px;
+}
+
 @media (max-width: 720px) {
   .playbookPreviewRow {
     grid-template-columns: 1fr;

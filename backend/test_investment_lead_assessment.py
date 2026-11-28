@@ -469,3 +469,25 @@ def test_playbook_24h_dedup_attaches_source_and_cleans_legacy_fields():
     detail = service.lead_detail(first_list["items"][0]["id"])
     assert detail is not None
     assert len(detail["sources"]) == 2
+
+    # Mark as "没必要深度剧本" updates both investment_leads and linked investment_lead_materials
+    lead_id = first_list["items"][0]["id"]
+    marked = service.set_playbook_feedback(lead_id, "没必要深度剧本")
+    assert marked["playbookFeedback"] == "没必要深度剧本"
+    assert marked["updatedMaterials"] == 2
+    assert service.list_leads(mode="playbook")["items"][0]["playbookFeedback"] == "没必要深度剧本"
+    mat_flags = [
+        row["playbook_feedback"]
+        for row in db.execute("SELECT playbook_feedback FROM investment_lead_materials").fetchall()
+    ]
+    assert mat_flags == ["没必要深度剧本", "没必要深度剧本"]
+
+    # Toggle back to empty clears both lead and linked materials
+    cleared = service.set_playbook_feedback(lead_id, "")
+    assert cleared["playbookFeedback"] == ""
+    assert cleared["playbookFeedbackAt"] is None
+    assert service.list_leads(mode="playbook")["items"][0]["playbookFeedback"] == ""
+    assert all(
+        row["playbook_feedback"] == ""
+        for row in db.execute("SELECT playbook_feedback FROM investment_lead_materials").fetchall()
+    )

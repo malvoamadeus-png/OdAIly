@@ -130,10 +130,11 @@ Prompt 版本为 `investment_leads_identity_search_v1`。当线索含具体资�
 - `/console/x-agent/investment-leads/detail`：原帖/推导、来源材料、补充读取、身份搜索、线索修订。
 - `/console/x-agent/investment-leads/status`：订阅数、Worker、任务、失败、预算和用量。
 - `/console/x-agent/investment-leads/retry-failed`：按阶段和数量重试失败任务。
+- `/console/x-agent/investment-leads/playbook-feedback`：人工将深度剧本及其关联原始材料标记为 `没必要深度剧本`（或清空取消），落库到 `investment_leads.playbook_feedback` 与 `investment_lead_materials.playbook_feedback`（PG migration v3 及 SQLite 同步支持），保留作后续触发规则升级的负样本案例。
 
 全部接口复用现有控制台管理员 Bearer session。
 
-投资线索列表每行提供“关闭来源监控”。展开后读取各来源目录账号的当前订阅状态，按账号单独关闭 `investmentLeadsEnabled`，复用既有订阅接口。多来源线索不提供默认全部关闭；操作只改变选中账号的投资线索订阅，保留历史结果及其他模块订阅。请求中禁用重复操作，失败显示错误，成功显示账号并刷新订阅总数；需要重新开启时使用账号目录。
+投资线索列表每行操作区右侧提供“关闭来源监控”，深度剧本卡片在同操作行左侧提供“不值得深度剧本”按钮（点击标记为 `没必要深度剧本`，再次点击可取消）。展开“关闭来源监控”后读取各来源目录账号的当前订阅状态，按账号单独关闭 `investmentLeadsEnabled`，复用既有订阅接口。多来源线索不提供默认全部关闭；操作只改变选中账号的投资线索订阅，保留历史结果及其他模块订阅。请求中禁用重复操作，失败显示错误，成功显示账号并刷新订阅总数；需要重新开启时使用账号目录。
 
 ## 存量回放
 

@@ -17,6 +17,7 @@ import {
   listXAgentInvestmentLeads,
   retryXAgentInvestmentLeadJobs,
   retryXAgentFailedJobs,
+  setXAgentInvestmentLeadPlaybookFeedback,
   updateXAgentSubscriptions,
   type XAgentAccount,
   type XAgentAccountModule,
@@ -316,13 +317,46 @@ function OperationAdviceFields({ advice }: { advice: XAgentOperationAdvice }) {
   return <div className="xAgentSignal"><strong>操作建议</strong>{fields.filter(([, value]) => value).map(([label, value]) => <span key={label}><em>{label}</em>{value}</span>)}</div>;
 }
 
-function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; onChanged: () => void }) {
+function InvestmentSourceControls({
+  leadId,
+  accounts,
+  hasPlaybook,
+  playbookFeedback,
+  onPlaybookFeedbackChanged,
+  onChanged,
+}: {
+  leadId: string;
+  accounts: string;
+  hasPlaybook: boolean;
+  playbookFeedback: string;
+  onPlaybookFeedbackChanged: (nextFeedback: string, nextFeedbackAt: string | null) => void;
+  onChanged: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sources, setSources] = useState<XAgentAccount[]>([]);
   const [pending, setPending] = useState<string | null>(null);
+  const [markingFeedback, setMarkingFeedback] = useState(false);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
+  const [playbookFeedbackError, setPlaybookFeedbackError] = useState('');
+
+  const isMarkedNotWorth = playbookFeedback === '没必要深度剧本';
+
+  async function togglePlaybookFeedback() {
+    if (markingFeedback) return;
+    setMarkingFeedback(true);
+    setPlaybookFeedbackError('');
+    try {
+      const nextValue: '' | '没必要深度剧本' = isMarkedNotWorth ? '' : '没必要深度剧本';
+      const result = await setXAgentInvestmentLeadPlaybookFeedback(leadId, nextValue);
+      onPlaybookFeedbackChanged(result.playbookFeedback, result.playbookFeedbackAt);
+    } catch (cause) {
+      setPlaybookFeedbackError(cause instanceof Error ? cause.message : '标记失败，请重试');
+    } finally {
+      setMarkingFeedback(false);
+    }
+  }
 
   async function showSources() {
     if (open) { setOpen(false); return; }
@@ -366,7 +400,22 @@ function InvestmentSourceControls({ accounts, onChanged }: { accounts: string; o
   }
 
   return <div className="xAgentInvestmentDetail">
-    <button className="secondaryButton compact" type="button" disabled={!accounts || pending !== null} aria-expanded={open} onClick={() => void showSources()}><Power size={14} /> 关闭来源监控</button>
+    <div className="investmentCardActionRow">
+      {hasPlaybook && (
+        <button
+          className={`secondaryButton compact playbookFeedbackBtn${isMarkedNotWorth ? ' playbookFeedbackBtn--marked' : ''}`}
+          type="button"
+          disabled={markingFeedback}
+          aria-pressed={isMarkedNotWorth}
+          title={isMarkedNotWorth ? '已标记为“没必要深度剧本”，点击可取消标记' : '标记为“没必要深度剧本”，留作后续规则升级案例'}
+          onClick={() => void togglePlaybookFeedback()}
+        >
+          {markingFeedback ? '保存中…' : isMarkedNotWorth ? '已标：没必要深度剧本' : '不值得深度剧本'}
+        </button>
+      )}
+      <button className="secondaryButton compact" type="button" disabled={!accounts || pending !== null} aria-expanded={open} onClick={() => void showSources()}><Power size={14} /> 关闭来源监控</button>
+    </div>
+    {playbookFeedbackError && <p role="alert" className="playbookFeedbackError">{playbookFeedbackError}</p>}
     {open && <div>
       <p>选择要关闭投资线索监控的来源账号。历史线索保留，其他订阅继续。</p>
       {loading && <span role="status">正在读取来源账号…</span>}
@@ -1402,11 +1451,29 @@ export function XAgentPanel({ refreshToken = 0 }: { refreshToken?: number }) {
                   来源账号 {item.accounts || '-'} · 首次发现 {formatTime(item.firstSeenAt)}{item.revision > 1 && ` · v${item.revision}`}
                 </span>
               </button>
-              <InvestmentSourceControls accounts={item.accounts || ''} onChanged={() => {
-                void refreshDashboard();
-                setAccountReload((value) => value + 1);
-                void getXAgentInvestmentLeadsStatus().then(setInvestmentStatus).catch(() => {});
-              }} />
+              <InvestmentSourceControls
+                leadId={item.id}
+                accounts={item.accounts || ''}
+                hasPlaybook={Boolean(playbook)}
+                playbookFeedback={item.playbookFeedback || ''}
+                onPlaybookFeedbackChanged={(nextFeedback, nextFeedbackAt) => {
+                  setInvestmentItems((current) => current.map((row) => (
+                    row.id === item.id
+                      ? { ...row, playbookFeedback: nextFeedback, playbookFeedbackAt: nextFeedbackAt }
+                      : row
+                  )));
+                  setInvestmentDetail((current) => (
+                    current && current.id === item.id
+                      ? { ...current, playbookFeedback: nextFeedback, playbookFeedbackAt: nextFeedbackAt }
+                      : current
+                  ));
+                }}
+                onChanged={() => {
+                  void refreshDashboard();
+                  setAccountReload((value) => value + 1);
+                  void getXAgentInvestmentLeadsStatus().then(setInvestmentStatus).catch(() => {});
+                }}
+              />
               {selected && <InvestmentLeadDetail detail={investmentDetail} loading={investmentDetailLoading} error={investmentDetailError} />}
             </article>;
           })}

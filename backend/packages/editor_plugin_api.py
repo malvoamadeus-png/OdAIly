@@ -968,6 +968,16 @@ class EditorPluginNewsGenService:
         except (TypeError, ValueError) as exc:
             raise EditorPluginApiError(str(exc)) from exc
 
+    def set_x_agent_investment_lead_playbook_feedback(self, actor: AuthenticatedEditor, payload: dict[str, Any]) -> dict[str, Any]:
+        del actor
+        try:
+            return self.hottopic.set_investment_lead_playbook_feedback(
+                lead_id=str(payload.get("lead_id") or "").strip(),
+                feedback=str(payload.get("feedback") or ""),
+            )
+        except (TypeError, ValueError) as exc:
+            raise EditorPluginApiError(str(exc)) from exc
+
     def local_feed_health(self) -> dict[str, Any]:
         syncer_status = self.feed_syncer.status()
         local_stats = self.local_store.stats(max_age_hours=self.api_settings.local_feed_max_age_hours)
@@ -1670,6 +1680,7 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
         "/console/x-agent/investment-leads/detail",
         "/console/x-agent/investment-leads/status",
         "/console/x-agent/investment-leads/retry-failed",
+        "/console/x-agent/investment-leads/playbook-feedback",
     }
 
     def do_OPTIONS(self) -> None:  # noqa: N802
@@ -2006,6 +2017,9 @@ class EditorPluginApiHandler(BaseHTTPRequestHandler):
                     return
                 if self.path == "/console/x-agent/investment-leads/retry-failed":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.retry_x_agent_investment_leads(actor, self._read_json())})
+                    return
+                if self.path == "/console/x-agent/investment-leads/playbook-feedback":
+                    self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.set_x_agent_investment_lead_playbook_feedback(actor, self._read_json())})
                     return
                 if self.path == "/console/pipeline-timing/get":
                     self._send_json(HTTPStatus.OK, {"ok": True, "data": self.server.service.get_pipeline_timing(actor)})

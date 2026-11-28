@@ -504,6 +504,35 @@ class InvestmentLeadPostgresRepository:
             ).fetchall()
             return total, [dict(row) for row in rows]
 
+    def set_playbook_feedback(
+        self, *, lead_id: str, feedback: str, now: datetime,
+    ) -> dict[str, Any] | None:
+        clean_feedback = feedback.strip()
+        if clean_feedback not in {"", "没必要深度剧本"}:
+            raise ValueError("不支持的深度剧本反馈标记")
+        feedback_at = now if clean_feedback else None
+        with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    "UPDATE investment_leads SET playbook_feedback=%s,playbook_feedback_at=%s,updated_at=%s "
+                    "WHERE id=%s RETURNING id,playbook_feedback,playbook_feedback_at",
+                    (clean_feedback, feedback_at, now, lead_id),
+                ).fetchone()
+                if row is None:
+                    return None
+                updated_materials = connection.execute(
+                    "UPDATE investment_lead_materials m SET playbook_feedback=%s "
+                    "WHERE EXISTS(SELECT 1 FROM investment_lead_sources s "
+                    "WHERE s.lead_id=%s AND s.material_id=m.material_id AND s.content_hash=m.content_hash)",
+                    (clean_feedback, lead_id),
+                ).rowcount
+                return {
+                    "leadId": str(row["id"]),
+                    "playbookFeedback": str(row["playbook_feedback"] or ""),
+                    "playbookFeedbackAt": row["playbook_feedback_at"],
+                    "updatedMaterials": int(updated_materials or 0),
+                }
+
     def lead_detail_rows(self, lead_id: str) -> dict[str, Any] | None:
         with connect_postgres(schema=self.schema, application_name=self.application_name, settings=self.settings) as connection:
             lead = connection.execute("SELECT * FROM investment_leads WHERE id=%s", (lead_id,)).fetchone()

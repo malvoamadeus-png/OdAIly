@@ -2145,6 +2145,43 @@ class InvestmentLeadService:
         ).fetchall()
         return {"items": [self._lead_payload(dict(row)) for row in rows], "total": total}
 
+    def set_playbook_feedback(self, lead_id: str, feedback: str) -> dict[str, Any]:
+        clean_id = str(lead_id or "").strip()
+        if not clean_id:
+            raise ValueError("lead_id 不能为空")
+        clean_feedback = str(feedback or "").strip()
+        if clean_feedback not in {"", "没必要深度剧本"}:
+            raise ValueError("不支持的深度剧本反馈标记")
+        if self.postgres_repository is not None:
+            result = self.postgres_repository.set_playbook_feedback(
+                lead_id=clean_id, feedback=clean_feedback, now=_now(),
+            )
+            if result is None:
+                raise ValueError("未找到对应的投资线索")
+            return result
+        now = _iso()
+        feedback_at = now if clean_feedback else None
+        with self.db:
+            cursor = self.db.execute(
+                "UPDATE investment_leads SET playbook_feedback=?,playbook_feedback_at=?,updated_at=? WHERE id=?",
+                (clean_feedback, feedback_at, now, clean_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("未找到对应的投资线索")
+            updated_materials = self.db.execute(
+                "UPDATE investment_lead_materials SET playbook_feedback=? "
+                "WHERE EXISTS(SELECT 1 FROM investment_lead_sources s "
+                "WHERE s.lead_id=? AND s.material_id=investment_lead_materials.material_id "
+                "AND s.content_hash=investment_lead_materials.content_hash)",
+                (clean_feedback, clean_id),
+            ).rowcount
+        return {
+            "leadId": clean_id,
+            "playbookFeedback": clean_feedback,
+            "playbookFeedbackAt": feedback_at,
+            "updatedMaterials": int(updated_materials or 0),
+        }
+
     def lead_detail(self, lead_id: str) -> dict[str, Any] | None:
         if self.postgres_repository is not None:
             rows = self.postgres_repository.lead_detail_rows(lead_id)
@@ -2260,6 +2297,8 @@ class InvestmentLeadService:
             "revision": int(row["revision"]), "status": row["status"], "accounts": row.get("accounts") or "",
             "replay": _decoded(row.get("replay_json"), {}),
             "playbook": playbook,
+            "playbookFeedback": str(row.get("playbook_feedback") or ""),
+            "playbookFeedbackAt": row.get("playbook_feedback_at"),
         }
 
 

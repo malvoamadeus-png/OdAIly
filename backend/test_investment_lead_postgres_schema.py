@@ -96,7 +96,7 @@ def test_investment_lead_schema_uses_native_versioned_migration(postgres_runtime
     from packages.investment_leads.postgres_schema import initialize_investment_leads_schema
     from psycopg.types.json import Jsonb
 
-    assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == (1, 2)
+    assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == (1, 2, 3)
     assert initialize_investment_leads_schema(schema=investment_schema, settings=postgres_runtime) == ()
 
     with connect_postgres(

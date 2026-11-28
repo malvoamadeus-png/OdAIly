@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS investment_lead_materials (
   first_observed_at TEXT NOT NULL,
   last_observed_at TEXT NOT NULL,
   completeness TEXT NOT NULL DEFAULT 'complete',
+  playbook_feedback TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(material_id,content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_investment_material_recent
@@ -105,6 +106,8 @@ CREATE TABLE IF NOT EXISTS investment_leads (
   source_claims_json TEXT NOT NULL DEFAULT '[]',
   replay_json TEXT NOT NULL DEFAULT '{}',
   playbook_json TEXT NOT NULL DEFAULT '{}',
+  playbook_feedback TEXT NOT NULL DEFAULT '',
+  playbook_feedback_at TEXT,
   first_seen_at TEXT NOT NULL,
   last_substantive_at TEXT NOT NULL,
   revision INTEGER NOT NULL DEFAULT 1,
@@ -191,6 +194,13 @@ def ensure_schema(connection: sqlite3.Connection, *, capture_started_at: str) ->
         connection.execute("ALTER TABLE investment_leads ADD COLUMN replay_json TEXT NOT NULL DEFAULT '{}'")
     if "playbook_json" not in lead_columns:
         connection.execute("ALTER TABLE investment_leads ADD COLUMN playbook_json TEXT NOT NULL DEFAULT '{}'")
+    if "playbook_feedback" not in lead_columns:
+        connection.execute("ALTER TABLE investment_leads ADD COLUMN playbook_feedback TEXT NOT NULL DEFAULT ''")
+    if "playbook_feedback_at" not in lead_columns:
+        connection.execute("ALTER TABLE investment_leads ADD COLUMN playbook_feedback_at TEXT")
+    material_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_lead_materials)")}
+    if "playbook_feedback" not in material_columns:
+        connection.execute("ALTER TABLE investment_lead_materials ADD COLUMN playbook_feedback TEXT NOT NULL DEFAULT ''")
     event_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(investment_lead_events)")}
     if "playbook_trigger" not in event_columns:
         connection.execute("ALTER TABLE investment_lead_events ADD COLUMN playbook_trigger TEXT NOT NULL DEFAULT ''")
